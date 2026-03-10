@@ -18,7 +18,7 @@ services:
       - key: HF_TOKEN
         sync: false
       - key: MODEL_PATH
-        value: your-username/codesheriff-bug-classifier
+        value: jayansh21/codesheriff-bug-classifier
       - key: LOG_LEVEL
         value: INFO
       - key: PYTHON_VERSION

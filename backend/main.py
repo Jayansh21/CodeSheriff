@@ -39,19 +39,13 @@ _model_available = False
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global _model_available
-    model_dir = MODELS_DIR / "final"
-    if model_dir.exists():
-        try:
-            from ml.inference import predict_bug  # noqa: F401 — triggers model load
-            _model_available = True
-            logger.info("Model loaded on startup successfully")
-        except Exception as e:
-            logger.error(f"Model failed to load on startup: {e}")
-    else:
-        logger.warning(
-            f"Model not found at {model_dir}. "
-            "Pipeline will use heuristic classifier."
-        )
+    try:
+        from ml.inference import predict_bug  # noqa: F401 — triggers model load
+        _model_available = True
+        logger.info("Model loaded on startup successfully")
+    except Exception as e:
+        logger.error(f"Model failed to load on startup: {e}")
+        logger.warning("Pipeline will use heuristic classifier.")
     logger.info("CodeSheriff API started ✅")
     yield
 
