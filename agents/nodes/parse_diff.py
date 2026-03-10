@@ -28,72 +28,34 @@ def _extract_chunks(diff_text: str) -> List[str]:
     """
     Parse a unified diff and return a list of meaningful code chunks.
 
-    Strategy:
-    1. Split on hunk headers (@@).
-    2. For each hunk, identify groups of consecutive removed lines ('-').
-    3. For each group, include up to _CONTEXT_LINES surrounding context
-       lines (unchanged lines starting with ' ') so the classifier can
-       see the function/variable context around the buggy code.
+    Strategy: collect contiguous groups of added lines ('+' prefix),
+    stripping the prefix.  Lines starting with '+++' (file header) are
+    skipped.  Each contiguous block of additions becomes one chunk.
     """
     if not diff_text or not diff_text.strip():
         logger.warning("Empty diff received.")
         return []
 
     chunks: List[str] = []
-    hunks = re.split(r"^@@.*?@@.*$", diff_text, flags=re.MULTILINE)
+    current_chunk: List[str] = []
 
-    for hunk in hunks:
-        lines = hunk.splitlines()
-        i = 0
-        while i < len(lines):
-            stripped = lines[i].strip()
-            if stripped.startswith("-") and not stripped.startswith("---"):
-                # Found start of a removed-line group
-                group_start = i
-                removed: List[str] = []
-                while i < len(lines):
-                    s = lines[i].strip()
-                    if s.startswith("-") and not s.startswith("---"):
-                        code_line = lines[i].lstrip("-").rstrip()
-                        if code_line.strip():
-                            removed.append(code_line)
-                        i += 1
-                    else:
-                        break
-                group_end = i
+    for line in diff_text.splitlines():
+        if line.startswith("+") and not line.startswith("+++"):
+            current_chunk.append(line[1:])
+        else:
+            if current_chunk:
+                text = "\n".join(current_chunk)
+                if text.strip():
+                    chunks.append(text)
+                current_chunk = []
 
-                if not removed:
-                    continue
+    # Flush last chunk
+    if current_chunk:
+        text = "\n".join(current_chunk)
+        if text.strip():
+            chunks.append(text)
 
-                # Context lines before the group (skip +/- lines)
-                before: List[str] = []
-                for j in range(max(0, group_start - _CONTEXT_LINES), group_start):
-                    ln = lines[j]
-                    if ln.startswith(" ") or (ln and not ln[0] in "+-"):
-                        before.append(ln[1:].rstrip() if ln.startswith(" ") else ln.rstrip())
-
-                # Context lines after the group (skip +/- lines)
-                after: List[str] = []
-                count = 0
-                for j in range(group_end, len(lines)):
-                    if count >= _CONTEXT_LINES:
-                        break
-                    ln = lines[j]
-                    if ln.startswith(" ") or (ln and not ln[0] in "+-"):
-                        after.append(ln[1:].rstrip() if ln.startswith(" ") else ln.rstrip())
-                        count += 1
-                    elif ln.strip().startswith("+"):
-                        continue  # skip added lines
-                    else:
-                        break
-
-                chunk = "\n".join(before + removed + after)
-                if chunk.strip():
-                    chunks.append(chunk)
-            else:
-                i += 1
-
-    logger.info(f"Parsed {len(chunks)} code chunk(s) from diff.")
+    logger.info("Parsed %d code chunk(s) from diff.", len(chunks))
     return chunks
 
 
