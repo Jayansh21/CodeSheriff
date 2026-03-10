@@ -14,7 +14,6 @@ Usage (from project root):
 
 import sys
 from pathlib import Path
-from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Request, BackgroundTasks
 from pydantic import BaseModel
@@ -23,41 +22,20 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-from utils.config import SAMPLE_DIFF, MODELS_DIR
+from utils.config import SAMPLE_DIFF
 from utils.logger import get_logger
 from agents.graph import run_review
 
 logger = get_logger("backend.main")
 
-# Track model availability
-_model_available = False
-
 
 # ---------------------------------------------------------------------------
-# Lifespan — replaces deprecated @app.on_event("startup")
-# ---------------------------------------------------------------------------
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    global _model_available
-    try:
-        from ml.inference import predict_bug  # noqa: F401 — triggers model load
-        _model_available = True
-        logger.info("Model loaded on startup successfully")
-    except Exception as e:
-        logger.error(f"Model failed to load on startup: {e}")
-        logger.warning("Pipeline will use heuristic classifier.")
-    logger.info("CodeSheriff API started ✅")
-    yield
-
-
-# ---------------------------------------------------------------------------
-# App
+# App — no model loading at startup (lazy-loads on first inference request)
 # ---------------------------------------------------------------------------
 app = FastAPI(
     title="CodeSheriff",
     description="AI-powered GitHub PR reviewer",
     version="1.0.0",
-    lifespan=lifespan,
 )
 
 
@@ -79,9 +57,10 @@ class ReviewResponse(BaseModel):
 
 @app.get("/health")
 async def health():
+    from ml.inference import _model
     return {
         "status": "ok",
-        "model_loaded": _model_available,
+        "model_loaded": _model is not None,
     }
 
 
