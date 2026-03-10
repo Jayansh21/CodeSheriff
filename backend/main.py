@@ -16,15 +16,14 @@ import sys
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request, BackgroundTasks
+from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-from utils.config import SAMPLE_DIFF
 from utils.logger import get_logger
-from agents.graph import run_review
 
 logger = get_logger("backend.main")
 
@@ -55,12 +54,23 @@ class ReviewResponse(BaseModel):
 # Endpoints
 # ---------------------------------------------------------------------------
 
+@app.get("/")
+async def root():
+    """Redirect visitors to the interactive API docs."""
+    return RedirectResponse(url="/docs")
+
+
 @app.get("/health")
 async def health():
-    from ml.inference import _model
+    model_loaded = False
+    try:
+        from ml.inference import _model
+        model_loaded = _model is not None
+    except Exception:
+        pass
     return {
         "status": "ok",
-        "model_loaded": _model is not None,
+        "model_loaded": model_loaded,
     }
 
 
@@ -74,6 +84,8 @@ async def ping():
 async def test_diff():
     """Run the pipeline on the built-in sample diff."""
     try:
+        from agents.graph import run_review
+        from utils.config import SAMPLE_DIFF
         review = run_review(SAMPLE_DIFF)
         issue_count = review.count("## Issue")
         return ReviewResponse(issues_found=issue_count, review=review)
@@ -89,6 +101,7 @@ async def review_diff(request: DiffRequest):
     if not diff:
         raise HTTPException(status_code=400, detail="Diff body is empty.")
     try:
+        from agents.graph import run_review
         review = run_review(diff)
         issue_count = review.count("## Issue")
         return ReviewResponse(issues_found=issue_count, review=review)
@@ -121,6 +134,7 @@ async def _process_webhook(payload: dict):
             resp.raise_for_status()
             diff_text = resp.text
 
+        from agents.graph import run_review
         review = run_review(diff_text)
 
         # Post review comment back to the PR
