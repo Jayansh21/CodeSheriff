@@ -1,0 +1,19 @@
+{
+    "_comment": "Replace 'your-render-app' with your actual Render URL before using this manifest.",
+    "name": "CodeSheriff",
+    "url": "https://your-render-app.onrender.com",
+    "hook_attributes": {
+        "url": "https://your-render-app.onrender.com/webhook",
+        "active": true
+    },
+    "redirect_url": "https://your-render-app.onrender.com/github/callback",
+    "public": true,
+    "default_permissions": {
+        "pull_requests": "write",
+        "contents": "read",
+        "metadata": "read"
+    },
+    "default_events": [
+        "pull_request"
+    ]
+}

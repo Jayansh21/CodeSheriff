@@ -1,0 +1,62 @@
+# Virtual environment
+venv/
+env/
+.venv/
+
+# Environment secrets — never commit real credentials
+.env
+
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+
+# Dataset files — too large for git
+data/raw/
+data/processed/
+*.csv
+*.json
+*.parquet
+
+# Exception — commit the GitHub App manifest
+!github-app-manifest.json
+
+# Model weights — too large for git, will live on HuggingFace Hub
+models/
+*.pt
+*.bin
+*.safetensors
+*.ckpt
+*.h5
+
+# HuggingFace cache
+.cache/
+~/.cache/huggingface/
+
+# Logs
+logs/
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+
+# Test and coverage artifacts
+.pytest_cache/
+htmlcov/
+.coverage
+
+# Build artifacts
+dist/
+build/
+*.egg-info/
+
+# Misc
+wandb/
