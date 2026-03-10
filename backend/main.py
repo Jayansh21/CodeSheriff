@@ -229,16 +229,29 @@ async def _process_webhook(payload: dict):
             logger.info("Ignoring webhook action: %s", action)
             return
 
-        diff_url = pr.get("diff_url", "")
-        if not diff_url:
-            logger.warning("No diff_url in webhook payload for %s#%s", repo_full_name, pr_number)
+        # Authenticate with GitHub API (needed for private repos)
+        from backend.github_auth import get_installation_token
+        import httpx
+
+        installation_id = payload.get("installation", {}).get("id")
+        if not installation_id:
+            logger.warning("No installation ID — cannot fetch diff or post comment for %s#%s", repo_full_name, pr_number)
             return
 
-        # Fetch the diff from GitHub
-        import httpx
-        logger.info("Fetching diff from %s", diff_url)
+        token = await get_installation_token(installation_id)
+
+        # Fetch the diff via GitHub REST API (works for both public and private repos)
+        diff_api_url = f"https://api.github.com/repos/{repo_full_name}/pulls/{pr_number}"
+        logger.info("Fetching diff from %s", diff_api_url)
         async with httpx.AsyncClient() as client:
-            resp = await client.get(diff_url, timeout=30.0)
+            resp = await client.get(
+                diff_api_url,
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Accept": "application/vnd.github.v3.diff",
+                },
+                timeout=30.0,
+            )
             resp.raise_for_status()
             diff_text = resp.text
         logger.info("Fetched diff (%d chars) for %s#%s", len(diff_text), repo_full_name, pr_number)
@@ -246,15 +259,6 @@ async def _process_webhook(payload: dict):
         from agents.graph import run_review
         review = run_review(diff_text)
         logger.info("Review generated (%d chars) for %s#%s", len(review), repo_full_name, pr_number)
-
-        # Post review comment back to the PR
-        from backend.github_auth import get_installation_token
-        installation_id = payload.get("installation", {}).get("id")
-        if not installation_id:
-            logger.warning("No installation ID — cannot post review comment for %s#%s", repo_full_name, pr_number)
-            return
-
-        token = await get_installation_token(installation_id)
 
         async with httpx.AsyncClient() as client:
             post_resp = await client.post(
