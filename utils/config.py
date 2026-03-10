@@ -29,6 +29,8 @@ GROQ_API_KEY: str = os.getenv("GROQ_API_KEY", "")
 HF_TOKEN: str = os.getenv("HF_TOKEN", "")
 MODEL_PATH: str = os.getenv("MODEL_PATH", str(PROJECT_ROOT / "models" / "codesheriff-model" / "final"))
 LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO").upper()
+USE_LOCAL_MODEL: bool = os.getenv("USE_LOCAL_MODEL", "false").lower() == "true"
+INFERENCE_SPACE_ID: str = os.getenv("INFERENCE_SPACE_ID", "jayansh21/codesheriff-inference")
 
 # GitHub App authentication
 GITHUB_APP_ID: str = os.getenv("GITHUB_APP_ID", "")

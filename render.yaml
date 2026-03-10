@@ -4,7 +4,7 @@ services:
     env: python
     region: oregon
     plan: free
-    buildCommand: pip install torch --index-url https://download.pytorch.org/whl/cpu && pip install -r requirements.txt
+    buildCommand: pip install -r requirements.txt
     startCommand: uvicorn backend.main:app --host 0.0.0.0 --port $PORT --workers 1
     envVars:
       - key: GROQ_API_KEY
@@ -19,6 +19,8 @@ services:
         sync: false
       - key: MODEL_PATH
         value: jayansh21/codesheriff-bug-classifier
+      - key: INFERENCE_SPACE_ID
+        value: jayansh21/codesheriff-inference
       - key: LOG_LEVEL
         value: INFO
       - key: PYTHON_VERSION

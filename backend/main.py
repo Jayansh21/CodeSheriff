@@ -62,15 +62,20 @@ async def root():
 
 @app.get("/health")
 async def health():
-    model_loaded = False
     try:
-        from ml.inference import _model
-        model_loaded = _model is not None
+        from ml.inference import USE_LOCAL_MODEL, _model, _hf_client
+        inference_mode = "local" if USE_LOCAL_MODEL else "hf_space"
+        if USE_LOCAL_MODEL:
+            model_ready = _model is not None
+        else:
+            model_ready = _hf_client is not None
     except Exception:
-        pass
+        inference_mode = "unknown"
+        model_ready = False
     return {
         "status": "ok",
-        "model_loaded": model_loaded,
+        "inference_mode": inference_mode,
+        "model_ready": model_ready,
     }
 
 
