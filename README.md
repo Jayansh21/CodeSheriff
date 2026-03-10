@@ -178,14 +178,14 @@ python backend/api_test.py
 
 **Endpoints:**
 
-| Method | Path         | Rate Limit  | Description                         |
-| ------ | ------------ | ----------- | ----------------------------------- |
-| GET    | `/`          | —           | Landing page                        |
-| GET    | `/health`    | —           | Service liveness + model status     |
-| GET    | `/ping`      | —           | Lightweight uptime check            |
-| POST   | `/test-diff` | 5/min       | Review built-in sample diff         |
-| POST   | `/review`    | 10/min      | Review a custom diff (JSON body)    |
-| POST   | `/webhook`   | —           | GitHub App webhook receiver (async) |
+| Method | Path         | Rate Limit | Description                         |
+| ------ | ------------ | ---------- | ----------------------------------- |
+| GET    | `/`          | —          | Landing page                        |
+| GET    | `/health`    | —          | Service liveness + model status     |
+| GET    | `/ping`      | —          | Lightweight uptime check            |
+| POST   | `/test-diff` | 5/min      | Review built-in sample diff         |
+| POST   | `/review`    | 10/min     | Review a custom diff (JSON body)    |
+| POST   | `/webhook`   | —          | GitHub App webhook receiver (async) |
 
 ---
 
@@ -201,12 +201,12 @@ All tests are designed to pass **before** model training completes (using heuris
 
 ## Deployment
 
-| Component           | Platform           | Notes                                          |
-| ------------------- | ------------------ | ---------------------------------------------- |
-| Backend API         | Render             | FastAPI, auto-deploys from GitHub              |
-| ML Inference Server | HuggingFace Spaces | Docker-based Space runs the model (CPU-only)   |
-| ML Model Weights    | HuggingFace Hub    | `jayansh21/codesheriff-bug-classifier`         |
-| Webhook             | GitHub App         | Listens for PR events, reviews in background   |
+| Component           | Platform           | Notes                                        |
+| ------------------- | ------------------ | -------------------------------------------- |
+| Backend API         | Render             | FastAPI, auto-deploys from GitHub            |
+| ML Inference Server | HuggingFace Spaces | Docker-based Space runs the model (CPU-only) |
+| ML Model Weights    | HuggingFace Hub    | `jayansh21/codesheriff-bug-classifier`       |
+| Webhook             | GitHub App         | Listens for PR events, reviews in background |
 
 **Why a separate inference server?** Render free tier has 512 MB RAM. Loading PyTorch + the model takes ~500 MB, causing OOM crashes. By offloading inference to a HuggingFace Space, the Render backend stays under 100 MB.
 
@@ -226,6 +226,7 @@ python scripts/deploy_inference_space.py
 This uploads `spaces/inference/` as a Docker-based HuggingFace Space.
 
 Then set in your `.env` (and Render Dashboard):
+
 ```
 MODEL_PATH=your-username/codesheriff-bug-classifier
 INFERENCE_SPACE_ID=your-username/codesheriff-inference

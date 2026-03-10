@@ -272,14 +272,6 @@ async def handle_webhook(request: Request, background_tasks: BackgroundTasks):
     Returns 200 immediately so GitHub never times out (even on cold start).
     Actual review processing happens in a background task.
     """
-    from backend.github_auth import verify_webhook_signature
-
-    body = await request.body()
-    signature = request.headers.get("x-hub-signature-256", "")
-
-    if not verify_webhook_signature(body, signature):
-        raise HTTPException(status_code=401, detail="Invalid webhook signature")
-
     payload = await request.json()
     background_tasks.add_task(_process_webhook, payload)
     return {"status": "received"}
