@@ -35,11 +35,13 @@ logger = get_logger("agents.graph")
 # ---------------------------------------------------------------------------
 class ReviewState(TypedDict):
     pr_diff: str
-    code_chunks: List[str]
+    code_chunks: List[dict]
     classifications: List[dict]
     prioritized_issues: List[dict]
     fix_suggestions: List[dict]
     final_review: str
+    review_summary: str
+    inline_comments: List[dict]
 
 
 # ---------------------------------------------------------------------------
@@ -67,10 +69,10 @@ def build_review_graph() -> StateGraph:
     return graph.compile()
 
 
-def run_review(pr_diff: str) -> str:
+def run_review(pr_diff: str) -> dict:
     """
-    Convenience wrapper: run the full review pipeline and return the
-    final Markdown review.
+    Run the full review pipeline and return the result dict containing
+    ``final_review``, ``review_summary``, and ``inline_comments``.
     """
     app = build_review_graph()
     initial_state: ReviewState = {
@@ -80,9 +82,15 @@ def run_review(pr_diff: str) -> str:
         "prioritized_issues": [],
         "fix_suggestions": [],
         "final_review": "",
+        "review_summary": "",
+        "inline_comments": [],
     }
     result = app.invoke(initial_state)
-    return result.get("final_review", "")
+    return {
+        "final_review": result.get("final_review", ""),
+        "review_summary": result.get("review_summary", ""),
+        "inline_comments": result.get("inline_comments", []),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -92,5 +100,5 @@ if __name__ == "__main__":
     from utils.config import SAMPLE_DIFF
 
     logger.info("Running CodeSheriff review pipeline …")
-    review = run_review(SAMPLE_DIFF)
-    print("\n" + review)
+    result = run_review(SAMPLE_DIFF)
+    print("\n" + result["final_review"])

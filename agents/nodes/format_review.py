@@ -1,7 +1,10 @@
 """
 Agent Node — format_review
 
-Assembles all fix suggestions into a single Markdown-formatted review.
+Assembles all fix suggestions into:
+  1. A compact **summary** (used to update the status comment).
+  2. Per-issue **inline_comments** metadata for line-level PR comments.
+  3. The full Markdown **final_review** (backward-compatible).
 """
 
 import sys
@@ -18,31 +21,74 @@ logger = get_logger("agents.nodes.format_review")
 
 
 def format_review_node(state: dict) -> dict:
-    """LangGraph node: produce a final Markdown review string."""
+    """LangGraph node: produce a final Markdown review string + inline metadata."""
     suggestions: List[dict] = state.get("fix_suggestions", [])
 
     if not suggestions:
         review = (
-            "# CodeSheriff Review\n\n"
+            "# \U0001f6e1\ufe0f CodeSheriff Review\n\n"
             "No issues detected — the code looks clean! :white_check_mark:\n"
         )
-        return {"final_review": review}
+        return {
+            "final_review": review,
+            "review_summary": review,
+            "inline_comments": [],
+        }
 
+    # ---- Full review (backward-compatible) ----
     lines = [
-        "# CodeSheriff Review\n",
+        "# \U0001f6e1\ufe0f CodeSheriff Review\n",
         f"**Issues found:** {len(suggestions)}\n",
         "---\n",
     ]
 
+    # ---- Inline comment metadata ----
+    inline_comments: List[dict] = []
+
+    # ---- Summary bullets ----
+    summary_bullets: List[str] = []
+
     for idx, s in enumerate(suggestions, 1):
-        lines.append(f"## Issue {idx}: {s.get('label', 'Unknown')}\n")
-        lines.append(f"**Confidence:** {s.get('confidence', 0):.0%}\n")
+        label = s.get("label", "Unknown")
+        conf = s.get("confidence", 0)
+        code = s.get("code", "")
+        fix = s.get("fix_suggestion", "N/A")
+        file_path = s.get("file", "unknown")
+        start_line = s.get("start_line", 0)
+
+        lines.append(f"## Issue {idx}: {label}\n")
+        lines.append(f"**Confidence:** {conf:.0%}\n")
+        lines.append(f"**File:** `{file_path}`\n")
         lines.append("**Problematic code:**\n")
-        lines.append(f"```python\n{s.get('code', '')}\n```\n")
+        lines.append(f"```python\n{code}\n```\n")
         lines.append("**Analysis & Suggested Fix:**\n")
-        lines.append(f"{s.get('fix_suggestion', 'N/A')}\n")
+        lines.append(f"{fix}\n")
         lines.append("---\n")
 
+        summary_bullets.append(f"- **{label}** — {fix[:80]}{'…' if len(fix) > 80 else ''}")
+
+        inline_comments.append({
+            "file": file_path,
+            "line": start_line,
+            "label": label,
+            "confidence": conf,
+            "body": f"**\U0001f6e1\ufe0f CodeSheriff — {label}** (confidence: {conf:.0%})\n\n{fix[:500]}",
+        })
+
     review = "\n".join(lines)
-    logger.info("Final review formatted.")
-    return {"final_review": review}
+
+    # ---- Compact summary for the status comment ----
+    summary_lines = [
+        "# \U0001f6e1\ufe0f CodeSheriff Review\n",
+        f"**Issues detected:** {len(suggestions)}\n",
+    ]
+    summary_lines.extend(summary_bullets)
+    summary_lines.append("\n_Inline comments have been added to the affected lines._")
+    review_summary = "\n".join(summary_lines)
+
+    logger.info("Final review formatted (%d issues, %d inline comments).", len(suggestions), len(inline_comments))
+    return {
+        "final_review": review,
+        "review_summary": review_summary,
+        "inline_comments": inline_comments,
+    }

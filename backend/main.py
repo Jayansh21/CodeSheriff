@@ -187,7 +187,8 @@ async def test_diff(request: Request):
     try:
         from agents.graph import run_review
         from utils.config import SAMPLE_DIFF
-        review = run_review(SAMPLE_DIFF)
+        result = run_review(SAMPLE_DIFF)
+        review = result["final_review"] if isinstance(result, dict) else result
         issue_count = review.count("## Issue")
         return ReviewResponse(issues_found=issue_count, review=review)
     except Exception as e:
@@ -204,12 +205,19 @@ async def review_diff(request: Request, body: DiffRequest):
         raise HTTPException(status_code=400, detail="Diff body is empty.")
     try:
         from agents.graph import run_review
-        review = run_review(diff)
+        result = run_review(diff)
+        review = result["final_review"] if isinstance(result, dict) else result
         issue_count = review.count("## Issue")
         return ReviewResponse(issues_found=issue_count, review=review)
     except Exception as e:
         logger.error(f"Pipeline error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ---------------------------------------------------------------------------
+# Performance safeguards
+# ---------------------------------------------------------------------------
+_MAX_INLINE_COMMENTS = 10
 
 
 # ---------------------------------------------------------------------------
@@ -221,6 +229,7 @@ async def _process_webhook(payload: dict):
     repo_full_name = payload.get("repository", {}).get("full_name", "unknown")
     pr = payload.get("pull_request", {})
     pr_number = pr.get("number", "?")
+    head_sha = pr.get("head", {}).get("sha", "")
 
     logger.info("Processing webhook: %s %s#%s", action, repo_full_name, pr_number)
 
@@ -239,8 +248,37 @@ async def _process_webhook(payload: dict):
             return
 
         token = await get_installation_token(installation_id)
+        gh_headers = {
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github+json",
+        }
 
-        # Fetch the diff via GitHub REST API (works for both public and private repos)
+        # ---------------------------------------------------------------
+        # Feature 1 — Post immediate "analyzing" status comment
+        # ---------------------------------------------------------------
+        status_comment_id = None
+        try:
+            async with httpx.AsyncClient() as client:
+                status_resp = await client.post(
+                    f"https://api.github.com/repos/{repo_full_name}/issues/{pr_number}/comments",
+                    headers=gh_headers,
+                    json={"body": (
+                        "\U0001f6e1\ufe0f **CodeSheriff** is analyzing this pull request\u2026\n\n"
+                        "_Estimated time: ~15 seconds._"
+                    )},
+                    timeout=15.0,
+                )
+                if status_resp.status_code == 201:
+                    status_comment_id = status_resp.json().get("id")
+                    logger.info("Posted status comment %s for %s#%s", status_comment_id, repo_full_name, pr_number)
+                else:
+                    logger.warning("Status comment creation returned %d", status_resp.status_code)
+        except Exception as e:
+            logger.warning("Failed to post status comment for %s#%s: %s", repo_full_name, pr_number, e)
+
+        # ---------------------------------------------------------------
+        # Fetch the diff via GitHub REST API
+        # ---------------------------------------------------------------
         diff_api_url = f"https://api.github.com/repos/{repo_full_name}/pulls/{pr_number}"
         logger.info("Fetching diff from %s", diff_api_url)
         async with httpx.AsyncClient() as client:
@@ -256,21 +294,85 @@ async def _process_webhook(payload: dict):
             diff_text = resp.text
         logger.info("Fetched diff (%d chars) for %s#%s", len(diff_text), repo_full_name, pr_number)
 
+        # ---------------------------------------------------------------
+        # Run the LangGraph review pipeline
+        # ---------------------------------------------------------------
         from agents.graph import run_review
-        review = run_review(diff_text)
-        logger.info("Review generated (%d chars) for %s#%s", len(review), repo_full_name, pr_number)
+        result = run_review(diff_text)
 
-        async with httpx.AsyncClient() as client:
-            post_resp = await client.post(
-                f"https://api.github.com/repos/{repo_full_name}/issues/{pr_number}/comments",
-                headers={
-                    "Authorization": f"Bearer {token}",
-                    "Accept": "application/vnd.github+json",
-                },
-                json={"body": review},
-                timeout=30.0,
-            )
-            post_resp.raise_for_status()
+        final_review = result.get("final_review", "")
+        review_summary = result.get("review_summary", "")
+        inline_comments = result.get("inline_comments", [])
+        logger.info("Review generated (%d chars, %d inline) for %s#%s",
+                     len(final_review), len(inline_comments), repo_full_name, pr_number)
+
+        # ---------------------------------------------------------------
+        # Feature 4 — Post inline PR comments (max _MAX_INLINE_COMMENTS)
+        # ---------------------------------------------------------------
+        posted_inline = 0
+        if inline_comments and head_sha:
+            async with httpx.AsyncClient() as client:
+                for ic in inline_comments[:_MAX_INLINE_COMMENTS]:
+                    try:
+                        ic_resp = await client.post(
+                            f"https://api.github.com/repos/{repo_full_name}/pulls/{pr_number}/comments",
+                            headers=gh_headers,
+                            json={
+                                "body": ic["body"],
+                                "commit_id": head_sha,
+                                "path": ic["file"],
+                                "line": max(ic.get("line", 1), 1),
+                                "side": "RIGHT",
+                            },
+                            timeout=15.0,
+                        )
+                        if ic_resp.status_code == 201:
+                            posted_inline += 1
+                        else:
+                            logger.warning(
+                                "Inline comment on %s:%d returned %d: %s",
+                                ic["file"], ic.get("line", 0),
+                                ic_resp.status_code, ic_resp.text[:200],
+                            )
+                    except Exception as e:
+                        logger.warning("Inline comment failed for %s:%d: %s", ic["file"], ic.get("line", 0), e)
+            logger.info("Posted %d/%d inline comments for %s#%s",
+                        posted_inline, len(inline_comments), repo_full_name, pr_number)
+
+        # ---------------------------------------------------------------
+        # Feature 5 — Update the status comment with summary (or full review)
+        # ---------------------------------------------------------------
+        body_to_post = review_summary if (review_summary and posted_inline) else final_review
+        if status_comment_id:
+            try:
+                async with httpx.AsyncClient() as client:
+                    patch_resp = await client.patch(
+                        f"https://api.github.com/repos/{repo_full_name}/issues/comments/{status_comment_id}",
+                        headers=gh_headers,
+                        json={"body": body_to_post},
+                        timeout=15.0,
+                    )
+                    patch_resp.raise_for_status()
+                logger.info("Updated status comment %s for %s#%s", status_comment_id, repo_full_name, pr_number)
+            except Exception as e:
+                logger.warning("Failed to update status comment: %s — posting new comment instead.", e)
+                async with httpx.AsyncClient() as client:
+                    await client.post(
+                        f"https://api.github.com/repos/{repo_full_name}/issues/{pr_number}/comments",
+                        headers=gh_headers,
+                        json={"body": body_to_post},
+                        timeout=15.0,
+                    )
+        else:
+            # Couldn't create status comment earlier — post fresh
+            async with httpx.AsyncClient() as client:
+                post_resp = await client.post(
+                    f"https://api.github.com/repos/{repo_full_name}/issues/{pr_number}/comments",
+                    headers=gh_headers,
+                    json={"body": body_to_post},
+                    timeout=30.0,
+                )
+                post_resp.raise_for_status()
         logger.info("Posted review to %s#%s", repo_full_name, pr_number)
 
     except Exception as e:

@@ -45,6 +45,7 @@ def prioritize_issues_node(state: dict) -> dict:
     )
 
     logger.info(
-        f"Prioritised {len(issues)} issue(s) from {len(classifications)} classification(s)."
+        "Prioritised %d issue(s) from %d classification(s).",
+        len(issues), len(classifications),
     )
     return {"prioritized_issues": issues}
