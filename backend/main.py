@@ -12,6 +12,7 @@ Usage (from project root):
     uvicorn backend.main:app --reload
 """
 
+import json
 import sys
 import time
 from pathlib import Path
@@ -216,41 +217,47 @@ async def review_diff(request: Request, body: DiffRequest):
 # ---------------------------------------------------------------------------
 async def _process_webhook(payload: dict):
     """Background task: run the review pipeline on a PR webhook event."""
+    action = payload.get("action", "")
+    repo_full_name = payload.get("repository", {}).get("full_name", "unknown")
+    pr = payload.get("pull_request", {})
+    pr_number = pr.get("number", "?")
+
+    logger.info("Processing webhook: %s %s#%s", action, repo_full_name, pr_number)
+
     try:
-        action = payload.get("action", "")
         if action not in ("opened", "synchronize", "reopened"):
-            logger.info(f"Ignoring webhook action: {action}")
+            logger.info("Ignoring webhook action: %s", action)
             return
 
-        pr = payload.get("pull_request", {})
         diff_url = pr.get("diff_url", "")
         if not diff_url:
-            logger.warning("No diff_url in webhook payload")
+            logger.warning("No diff_url in webhook payload for %s#%s", repo_full_name, pr_number)
             return
 
         # Fetch the diff from GitHub
         import httpx
+        logger.info("Fetching diff from %s", diff_url)
         async with httpx.AsyncClient() as client:
             resp = await client.get(diff_url, timeout=30.0)
             resp.raise_for_status()
             diff_text = resp.text
+        logger.info("Fetched diff (%d chars) for %s#%s", len(diff_text), repo_full_name, pr_number)
 
         from agents.graph import run_review
         review = run_review(diff_text)
+        logger.info("Review generated (%d chars) for %s#%s", len(review), repo_full_name, pr_number)
 
         # Post review comment back to the PR
         from backend.github_auth import get_installation_token
         installation_id = payload.get("installation", {}).get("id")
         if not installation_id:
-            logger.warning("No installation ID — cannot post review comment")
+            logger.warning("No installation ID — cannot post review comment for %s#%s", repo_full_name, pr_number)
             return
 
         token = await get_installation_token(installation_id)
-        repo_full_name = payload.get("repository", {}).get("full_name", "")
-        pr_number = pr.get("number")
 
         async with httpx.AsyncClient() as client:
-            await client.post(
+            post_resp = await client.post(
                 f"https://api.github.com/repos/{repo_full_name}/issues/{pr_number}/comments",
                 headers={
                     "Authorization": f"Bearer {token}",
@@ -259,10 +266,11 @@ async def _process_webhook(payload: dict):
                 json={"body": review},
                 timeout=30.0,
             )
-        logger.info(f"Posted review to {repo_full_name}#{pr_number}")
+            post_resp.raise_for_status()
+        logger.info("Posted review to %s#%s", repo_full_name, pr_number)
 
     except Exception as e:
-        logger.error(f"Background webhook processing failed: {e}", exc_info=True)
+        logger.error("Background webhook processing failed for %s#%s: %s", repo_full_name, pr_number, e, exc_info=True)
 
 
 @app.post("/webhook")
@@ -272,6 +280,32 @@ async def handle_webhook(request: Request, background_tasks: BackgroundTasks):
     Returns 200 immediately so GitHub never times out (even on cold start).
     Actual review processing happens in a background task.
     """
-    payload = await request.json()
+    body = await request.body()
+    payload = json.loads(body)
+
+    # Log signature for debugging (non-blocking — never reject)
+    signature = request.headers.get("x-hub-signature-256", "")
+    event_type = request.headers.get("x-github-event", "unknown")
+    action = payload.get("action", "")
+    repo = payload.get("repository", {}).get("full_name", "unknown")
+    pr_number = payload.get("pull_request", {}).get("number", "?")
+
+    logger.info(
+        "Webhook received: event=%s action=%s repo=%s PR=#%s sig=%s",
+        event_type, action, repo, pr_number,
+        "present" if signature else "MISSING",
+    )
+
     background_tasks.add_task(_process_webhook, payload)
     return {"status": "received"}
+
+
+# ---------------------------------------------------------------------------
+# Webhook debug endpoint (temporary — remove after confirming delivery)
+# ---------------------------------------------------------------------------
+@app.post("/webhook-test")
+async def webhook_test(request: Request):
+    """Lightweight endpoint to confirm POST routing works on Render."""
+    payload = await request.json()
+    logger.info("Webhook test received: %s", payload)
+    return {"received": True, "keys": list(payload.keys())}
