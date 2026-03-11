@@ -93,6 +93,42 @@ TYPE_MISMATCH_SEEDS = [
     'def merge(text, num):\n    return text + num + " items"',
 ]
 
+NULL_REFERENCE_SEEDS = [
+    'def get_name(uid):\n    user = db.fetchone()\n    return user.name',
+    'def load_config(path):\n    config = None\n    print(config.settings)',
+    'def first_item(cursor):\n    row = cursor.fetchone()\n    return row["id"]',
+    'def get_timeout(cfg):\n    timeout = cfg.get("timeout")\n    return int(timeout)',
+    'def process_user(db, uid):\n    user = db.query(uid)\n    return user.email.lower()',
+    'def read_setting(d, key):\n    val = d.get(key)\n    return val.strip()',
+    'def parse_response(resp):\n    data = resp.json().get("result")\n    return data.value',
+    'def find_order(db, oid):\n    order = db.find_one({"id": oid})\n    return order["total"]',
+    'def get_header(headers, name):\n    h = headers.get(name)\n    return h.decode("utf-8")',
+    'def first_match(results):\n    match = results.fetchone()\n    return match.group(0)',
+    'def load_user(session):\n    user = session.get("user")\n    return user["name"]',
+    'def get_parent(node):\n    parent = node.parent\n    return parent.value',
+    'def extract_email(record):\n    email = record.get("email")\n    return email.split("@")[0]',
+    'def get_price(product):\n    price = product.get("price")\n    return float(price)',
+    'def read_env(key):\n    val = os.environ.get(key)\n    return val.upper()',
+]
+
+LOGIC_FLAW_SEEDS = [
+    'def total(items):\n    s = 0\n    for i in range(len(items) + 1):\n        s += items[i]\n    return s',
+    'def avg(values):\n    return sum(values) / len(values)',
+    'def discount(price, pct):\n    return price / pct',
+    'def check(status):\n    if status == "active" or "pending":\n        return True',
+    'def last_elem(arr):\n    return arr[len(arr)]',
+    'def split_bill(total, guests):\n    return total / len(guests)',
+    'def is_valid(x):\n    if x == 0 or "null":\n        return False\n    return True',
+    'def compute_rate(hits, misses):\n    return hits / (hits + misses)',
+    'def normalize(vals):\n    mx = max(vals)\n    return [v / mx for v in vals]',
+    'def convert(x, y):\n    if x == "high" or "critical":\n        return y * 2\n    return y',
+    'def process_batch(items):\n    for i in range(len(items) + 1):\n        print(items[i])',
+    'def ratio(a, b):\n    return a / b',
+    'def mean_score(scores):\n    return sum(scores) / len(scores)',
+    'def pct_change(old, new):\n    return (new - old) / old * 100',
+    'def safe_div(a, b):\n    if b == 0 or None:\n        return 0\n    return a / b',
+]
+
 
 # ---------------------------------------------------------------------------
 # Heuristic labelling functions (extended)
@@ -385,6 +421,10 @@ def prepare_balanced_dataset() -> pd.DataFrame:
         seed_records.append({"code": code, "label": 3})
     for code in TYPE_MISMATCH_SEEDS:
         seed_records.append({"code": code, "label": 2})
+    for code in NULL_REFERENCE_SEEDS:
+        seed_records.append({"code": code, "label": 1})
+    for code in LOGIC_FLAW_SEEDS:
+        seed_records.append({"code": code, "label": 4})
 
     seed_df = pd.DataFrame(seed_records)
     df = pd.concat([df, seed_df], ignore_index=True)
