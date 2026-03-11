@@ -375,20 +375,75 @@ class TestIssueTypeMapping:
 
 
 # ---------------------------------------------------------------------------
-# Format review: fix-section parser
+# Format review: structured fields rendering
 # ---------------------------------------------------------------------------
 
-class TestFixSectionParser:
-    """Unit tests for _parse_fix_sections in format_review."""
+class TestStructuredFormatReview:
+    """Tests for structured JSON field rendering in format_review."""
 
-    def test_extracts_code_block(self):
-        from agents.nodes.format_review import _parse_fix_sections
-        text = "This is bad.\n\n**Suggested Fix**\n```python\nx = safe()\n```\n"
-        sections = _parse_fix_sections(text)
-        assert "x = safe()" in sections["suggested_fix"]
+    def test_structured_fields_rendered(self):
+        """When structured fields are present, they appear in the review."""
+        state = {
+            "fix_suggestions": [
+                {
+                    "label": "Security Vulnerability",
+                    "confidence": 0.95,
+                    "code": "os.system(cmd)",
+                    "file": "app.py",
+                    "start_line": 5,
+                    "explanation": "Command injection risk via os.system.",
+                    "severity": "Critical",
+                    "recommended_fix": "Use subprocess.run with a list.",
+                    "fixed_code": "subprocess.run(['ls', '-l'])",
+                    "fix_suggestion": "Command injection risk via os.system.",
+                }
+            ]
+        }
+        result = format_review_node(state)
+        review = result["final_review"]
+        assert "Command injection risk" in review
+        assert "Critical" in review
+        assert "subprocess.run" in review
+        assert "Recommended fix" in review
 
-    def test_plain_text_preserved(self):
-        from agents.nodes.format_review import _parse_fix_sections
-        text = "Use parameterized queries to avoid SQL injection."
-        sections = _parse_fix_sections(text)
-        assert sections["explanation"] == text
+    def test_inline_body_uses_structured_fields(self):
+        """Inline comment body uses structured explanation, not raw text."""
+        from agents.nodes.format_review import _build_inline_body
+        suggestion = {
+            "explanation": "Null dereference possible.",
+            "severity": "High",
+            "recommended_fix": "Add a None check.",
+            "fixed_code": "if x is not None: x.y",
+        }
+        body = _build_inline_body("Runtime Bug", 0.9, suggestion)
+        assert "Null dereference possible." in body
+        assert "High" in body
+        assert "Add a None check." in body
+        assert "if x is not None: x.y" in body
+        # No numbered list artifacts
+        assert "\n1." not in body
+        assert "\n2." not in body
+
+    def test_fallback_to_fix_suggestion(self):
+        """When structured fields are absent, falls back to fix_suggestion."""
+        from agents.nodes.format_review import _build_inline_body
+        suggestion = {
+            "fix_suggestion": "Use parameterized queries.",
+        }
+        body = _build_inline_body("SQL Injection", 0.85, suggestion)
+        assert "Use parameterized queries." in body
+
+    def test_no_empty_sections_rendered(self):
+        """Empty optional fields should not produce blank sections."""
+        from agents.nodes.format_review import _build_inline_body
+        suggestion = {
+            "explanation": "Issue found.",
+            "severity": "",
+            "recommended_fix": "",
+            "fixed_code": "",
+        }
+        body = _build_inline_body("Bug", 0.7, suggestion)
+        assert "Issue found." in body
+        assert "Severity" not in body
+        assert "Recommended fix" not in body
+        assert "Fixed code" not in body

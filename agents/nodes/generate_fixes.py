@@ -6,11 +6,14 @@ suggested fixes for all identified issues in a **single batch prompt**.
 
 Features:
   - Batches all issues into one LLM call to reduce token usage.
+  - LLM returns structured JSON for deterministic parsing.
   - Automatic fallback from the primary model to a smaller model on
     rate-limit (429) or quota errors.
   - Retry logic with exponential backoff.
+  - Graceful fallback template when JSON parsing fails.
 """
 
+import json
 import re
 import sys
 import time
@@ -46,17 +49,18 @@ def _is_rate_limit_error(exc: Exception) -> bool:
 # ---------------------------------------------------------------------------
 
 def _build_batch_prompt(issues: List[dict]) -> str:
-    """Build a single prompt that asks the LLM to analyse all issues at once."""
+    """Build a single prompt that asks the LLM to return structured JSON."""
     header = (
         "You are an expert code reviewer. A static analysis tool flagged the "
         "following issues in a pull request.\n\n"
-        "For **each** issue, provide:\n"
-        "1. A concise **explanation** of what is wrong.\n"
-        "2. A **severity** rating (Critical / High / Medium / Low).\n"
-        "3. A **suggested fix** as a corrected code snippet.\n\n"
-        "Separate your answers clearly using the exact heading format:\n"
-        "### Issue N\n"
-        "(where N is the issue number)\n\n"
+        "For **each** issue, respond with a JSON array. Each element must be "
+        "an object with exactly these keys:\n"
+        '  - "issue_number": integer (starting from 1)\n'
+        '  - "explanation": string (concise description of what is wrong)\n'
+        '  - "severity": string (one of "Critical", "High", "Medium", "Low")\n'
+        '  - "recommended_fix": string (brief description of how to fix it)\n'
+        '  - "fixed_code": string (corrected code snippet)\n\n'
+        "Return ONLY the JSON array — no markdown fences, no extra text.\n\n"
         "---\n\n"
     )
 
@@ -136,29 +140,87 @@ def _call_groq(prompt: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Response parser — split batch LLM output back into per-issue text
+# Response parser — extract structured JSON from LLM output
 # ---------------------------------------------------------------------------
 
-_ISSUE_HEADING_RE = re.compile(r"###\s*Issue\s+(\d+)", re.IGNORECASE)
+_JSON_ARRAY_RE = re.compile(r"\[.*\]", re.DOTALL)
 
 
-def _split_batch_response(response_text: str, issue_count: int) -> List[str]:
-    """Split a batch LLM response into per-issue explanation strings."""
-    # Find all "### Issue N" headings
-    splits = list(_ISSUE_HEADING_RE.finditer(response_text))
+def _fallback_entry(issue: dict) -> dict:
+    """Return a safe fallback structure when JSON parsing fails for one issue."""
+    return {
+        "explanation": "Potential issue detected by static analysis.",
+        "severity": "Medium",
+        "recommended_fix": "Review this code for correctness.",
+        "fixed_code": "",
+    }
 
-    if not splits:
-        # LLM didn't follow heading format — give the full text to every issue
-        return [response_text] * issue_count
 
-    parts: dict[int, str] = {}
-    for i, match in enumerate(splits):
-        issue_num = int(match.group(1))
-        start = match.end()
-        end = splits[i + 1].start() if i + 1 < len(splits) else len(response_text)
-        parts[issue_num] = response_text[start:end].strip()
+def _validate_entry(entry: dict) -> dict:
+    """Ensure all required keys exist and are non-empty strings."""
+    required_keys = ("explanation", "severity", "recommended_fix", "fixed_code")
+    cleaned = {}
+    for key in required_keys:
+        val = entry.get(key, "")
+        cleaned[key] = str(val).strip() if val else ""
+    # Guarantee explanation is never blank
+    if not cleaned["explanation"]:
+        cleaned["explanation"] = "Potential issue detected by static analysis."
+    if not cleaned["severity"]:
+        cleaned["severity"] = "Medium"
+    if not cleaned["recommended_fix"]:
+        cleaned["recommended_fix"] = "Review this code for correctness."
+    return cleaned
 
-    return [parts.get(idx, response_text) for idx in range(1, issue_count + 1)]
+
+def _parse_json_response(response_text: str, issues: List[dict]) -> List[dict]:
+    """
+    Parse the LLM JSON response into a list of structured dicts.
+
+    Returns one dict per issue with keys:
+      explanation, severity, recommended_fix, fixed_code
+
+    Falls back to a safe template when parsing fails.
+    """
+    # Try to extract a JSON array even if the LLM wrapped it in markdown fences
+    cleaned = response_text.strip()
+    # Strip markdown code fences if present
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```(?:json)?\s*\n?", "", cleaned)
+        cleaned = re.sub(r"\n?```\s*$", "", cleaned)
+
+    # Find the JSON array in the response
+    match = _JSON_ARRAY_RE.search(cleaned)
+    if not match:
+        logger.warning("No JSON array found in LLM response — using fallback.")
+        return [_fallback_entry(issue) for issue in issues]
+
+    try:
+        parsed = json.loads(match.group(0))
+    except json.JSONDecodeError as e:
+        logger.warning("JSON decode failed: %s — using fallback.", e)
+        return [_fallback_entry(issue) for issue in issues]
+
+    if not isinstance(parsed, list):
+        logger.warning("LLM returned non-array JSON — using fallback.")
+        return [_fallback_entry(issue) for issue in issues]
+
+    # Map by issue_number, default to order
+    by_number: dict[int, dict] = {}
+    for i, item in enumerate(parsed):
+        if isinstance(item, dict):
+            num = item.get("issue_number", i + 1)
+            by_number[int(num)] = item
+
+    results = []
+    for idx, issue in enumerate(issues, 1):
+        entry = by_number.get(idx)
+        if entry:
+            results.append(_validate_entry(entry))
+        else:
+            results.append(_fallback_entry(issue))
+
+    return results
 
 
 # ---------------------------------------------------------------------------
@@ -179,11 +241,19 @@ def generate_fixes_node(state: dict) -> dict:
 
     prompt = _build_batch_prompt(issues)
     response_text = _call_groq(prompt)
-    explanations = _split_batch_response(response_text, len(issues))
+    structured = _parse_json_response(response_text, issues)
 
     suggestions = []
-    for issue, explanation in zip(issues, explanations):
-        suggestions.append({**issue, "fix_suggestion": explanation})
+    for issue, fields in zip(issues, structured):
+        suggestions.append({
+            **issue,
+            "explanation": fields["explanation"],
+            "severity": fields["severity"],
+            "recommended_fix": fields["recommended_fix"],
+            "fixed_code": fields["fixed_code"],
+            # Keep a backward-compatible key
+            "fix_suggestion": fields["explanation"],
+        })
 
     logger.info("Generated %d fix suggestion(s).", len(suggestions))
     return {"fix_suggestions": suggestions}
