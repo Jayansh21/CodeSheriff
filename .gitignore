@@ -52,6 +52,8 @@ Thumbs.db
 .pytest_cache/
 htmlcov/
 .coverage
+test_result.txt
+test_out.txt
 
 # Build artifacts
 dist/

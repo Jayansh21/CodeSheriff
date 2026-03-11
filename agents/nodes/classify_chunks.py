@@ -4,14 +4,16 @@ Agent Node — classify_chunks
 Runs the fine-tuned CodeBERT classifier on each code chunk.
 
 The ML model is the **sole** detection engine.  No hardcoded keyword/regex
-detection exists here.  Two lightweight post-processing steps refine the
+detection exists here.  Three lightweight post-processing steps refine the
 raw ML output:
 
   1. **Confidence gate** — predictions below ``CONFIDENCE_THRESHOLD``
      (default 0.60, configurable via env) are downgraded to "Code Quality".
-  2. **Post-classification refinement** — a handful of generic code-pattern
-     rules can *adjust* the issue type when the ML confidence is borderline.
-     They never *replace* the ML classifier.
+  2. **Confidence lock** — if ML confidence >= 0.95 the prediction is
+     trusted absolutely and refinement rules are skipped.
+  3. **Post-classification refinement** — generic code-pattern rules
+     can *adjust* the issue type for moderate-confidence predictions.
+     They never *replace* the ML classifier for strong predictions.
 """
 
 import re
@@ -132,15 +134,18 @@ def _is_trivial_chunk(code: str) -> bool:
 #
 # Two tiers:
 #   HIGH-SIGNAL — patterns the ML model consistently misclassifies as Clean.
-#                 These run regardless of ML confidence because the model has
-#                 a known blind spot for them.
+#                 These run when ML confidence is moderate, because the model
+#                 has known blind spots for them.
 #   BORDERLINE  — softer adjustments that only fire when ML confidence is
-#                 below _BORDERLINE_CEILING so strong ML predictions are
-#                 respected.
+#                 below _BORDERLINE_CEILING.
+#
+# GUARD: If ML confidence >= 0.95, refinement rules are **never** applied.
+# This ensures very strong ML predictions are always trusted.
 #
 # All rules *adjust* the issue type after ML runs — they never bypass it.
 # ---------------------------------------------------------------------------
-_BORDERLINE_CEILING = 0.75
+_CONFIDENCE_LOCK = 0.95     # above this, refinement rules are skipped entirely
+_BORDERLINE_CEILING = 0.75  # borderline rules only fire below this
 
 # Compiled once — each tuple is (pattern, target_issue_type).
 _HIGH_SIGNAL_RULES = [
@@ -168,11 +173,17 @@ def _refine_issue_type(issue_type: str, confidence: float, code: str) -> str:
     Adjust *issue_type* based on well-known code patterns the ML model
     has blind spots for.
 
-    High-signal rules run regardless of confidence (model is known to
-    mis-classify these as Clean).  Borderline rules only fire when
-    confidence < 0.75.
+    Guard: if ML confidence >= 0.95 the model is very sure — refinement
+    rules are skipped entirely so strong ML predictions are never overridden.
+
+    High-signal rules run for moderate confidence.  Borderline rules only
+    fire when confidence < 0.75.
     """
-    # High-signal rules — always apply
+    # Very confident ML prediction — trust it, skip all rules
+    if confidence >= _CONFIDENCE_LOCK:
+        return issue_type
+
+    # High-signal rules — apply for moderate confidence
     for pattern, target in _HIGH_SIGNAL_RULES:
         if pattern.search(code):
             return target

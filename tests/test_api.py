@@ -23,7 +23,7 @@ class TestHealthEndpoint:
         assert response.status_code == 200
         data = response.json()
         assert data["status"] == "ok"
-        assert "model_loaded" in data
+        assert "model_ready" in data
 
 
 class TestTestDiffEndpoint:

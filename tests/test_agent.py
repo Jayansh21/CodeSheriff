@@ -9,7 +9,7 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-from utils.config import SAMPLE_DIFF
+from utils.config import SAMPLE_DIFF, CONFIDENCE_THRESHOLD
 from agents.nodes.parse_diff import parse_diff_node
 from agents.nodes.classify_chunks import classify_chunks_node
 from agents.nodes.prioritize_issues import prioritize_issues_node
@@ -128,3 +128,171 @@ class TestFullPipeline:
         assert len(state["final_review"]) > 0
         # Should find at least one issue in the sample diff
         assert state["final_review"].count("## Issue") >= 1
+
+
+# ---------------------------------------------------------------------------
+# Diff parsing: function-level chunking & line numbers
+# ---------------------------------------------------------------------------
+
+class TestDiffParsing:
+    """Detailed diff parsing tests."""
+
+    def test_function_level_splitting(self):
+        """Each top-level def becomes its own chunk."""
+        diff = (
+            "--- a/foo.py\n"
+            "+++ b/foo.py\n"
+            "@@ -0,0 +1,8 @@\n"
+            "+def alpha():\n"
+            "+    return 1\n"
+            "+\n"
+            "+def beta():\n"
+            "+    return 2\n"
+            "+\n"
+            "+class Gamma:\n"
+            "+    pass\n"
+        )
+        result = parse_diff_node({"pr_diff": diff})
+        chunks = result["code_chunks"]
+        assert len(chunks) == 3
+        assert "alpha" in chunks[0]["code"]
+        assert "beta" in chunks[1]["code"]
+        assert "Gamma" in chunks[2]["code"]
+
+    def test_start_line_tracking(self):
+        """Chunks carry the correct start line from the hunk header."""
+        diff = (
+            "--- a/bar.py\n"
+            "+++ b/bar.py\n"
+            "@@ -0,0 +1,4 @@\n"
+            "+def first():\n"
+            "+    pass\n"
+            "+def second():\n"
+            "+    pass\n"
+        )
+        result = parse_diff_node({"pr_diff": diff})
+        chunks = result["code_chunks"]
+        assert chunks[0]["start_line"] == 1
+        assert chunks[1]["start_line"] == 3
+
+    def test_multi_file_diff(self):
+        """Chunks from different files are separated correctly."""
+        diff = (
+            "--- a/a.py\n"
+            "+++ b/a.py\n"
+            "@@ -0,0 +1,2 @@\n"
+            "+def a_func():\n"
+            "+    pass\n"
+            "--- a/b.py\n"
+            "+++ b/b.py\n"
+            "@@ -0,0 +1,2 @@\n"
+            "+def b_func():\n"
+            "+    pass\n"
+        )
+        result = parse_diff_node({"pr_diff": diff})
+        files = {c["file"] for c in result["code_chunks"]}
+        assert files == {"a.py", "b.py"}
+
+    def test_deleted_lines_excluded(self):
+        """Only + lines appear in chunks; - lines are excluded."""
+        diff = (
+            "--- a/c.py\n"
+            "+++ b/c.py\n"
+            "@@ -1,2 +1,2 @@\n"
+            "-old_code = 1\n"
+            "+new_code = 2\n"
+        )
+        result = parse_diff_node({"pr_diff": diff})
+        for chunk in result["code_chunks"]:
+            assert "old_code" not in chunk["code"]
+            assert "new_code" in chunk["code"]
+
+
+# ---------------------------------------------------------------------------
+# Confidence gate behaviour
+# ---------------------------------------------------------------------------
+
+class TestConfidenceGate:
+    """Verify the confidence threshold logic in classify_chunks_node."""
+
+    def test_low_confidence_downgraded(self):
+        """Chunks with confidence < threshold get downgraded to Code Quality."""
+        state = {
+            "code_chunks": [
+                {
+                    "code": "def process(data):\n    result = data['key'] + 1\n    return result",
+                    "file": "test.py",
+                    "start_line": 1,
+                }
+            ]
+        }
+        result = classify_chunks_node(state)
+        for c in result["classifications"]:
+            if c["confidence"] < CONFIDENCE_THRESHOLD and c["label"] not in ("Clean", "Code Quality"):
+                assert False, f"Low-confidence chunk not downgraded: {c['label']} {c['confidence']}"
+
+    def test_trivial_chunks_skipped(self):
+        """Trivial chunks produce no classifications."""
+        state = {
+            "code_chunks": [
+                {
+                    "code": "import os\nimport sys\nfrom pathlib import Path",
+                    "file": "imports.py",
+                    "start_line": 1,
+                }
+            ]
+        }
+        result = classify_chunks_node(state)
+        assert result["classifications"] == []
+
+
+# ---------------------------------------------------------------------------
+# Format review: inline comments and summary
+# ---------------------------------------------------------------------------
+
+class TestFormatReviewDetails:
+    """Additional format_review_node tests."""
+
+    def test_inline_comments_generated(self):
+        state = {
+            "fix_suggestions": [
+                {
+                    "label": "Security Vulnerability",
+                    "confidence": 0.95,
+                    "code": "query = 'SELECT * FROM users WHERE id=' + uid",
+                    "fix_suggestion": "Use parameterized queries.",
+                    "file": "app.py",
+                    "start_line": 10,
+                }
+            ]
+        }
+        result = format_review_node(state)
+        assert len(result["inline_comments"]) == 1
+        ic = result["inline_comments"][0]
+        assert ic["file"] == "app.py"
+        assert ic["line"] >= 10
+        assert "CodeSheriff" in ic["body"]
+
+    def test_summary_grouped_counts(self):
+        state = {
+            "fix_suggestions": [
+                {"label": "Security Vulnerability", "confidence": 0.9,
+                 "code": "a", "fix_suggestion": "fix a", "file": "x.py", "start_line": 1},
+                {"label": "Security Vulnerability", "confidence": 0.8,
+                 "code": "b", "fix_suggestion": "fix b", "file": "x.py", "start_line": 5},
+                {"label": "Runtime Bug", "confidence": 0.7,
+                 "code": "c", "fix_suggestion": "fix c", "file": "y.py", "start_line": 1},
+            ]
+        }
+        result = format_review_node(state)
+        summary = result["review_summary"]
+        assert "3 issues" in summary
+        assert "Security Vulnerabilit" in summary
+        assert "Runtime Bug" in summary
+
+    def test_issue_line_offset_sql(self):
+        """Line offset finder should locate the SQL injection line."""
+        from agents.nodes.format_review import _find_issue_line_offset
+        code = "def get_user(uid):\n    q = 'SELECT * FROM users WHERE id=' + uid\n    return db.execute(q)"
+        offset = _find_issue_line_offset(code)
+        assert offset == 1  # the SQL line is on line index 1
