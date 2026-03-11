@@ -101,37 +101,30 @@ def require_groq_key() -> str:
 SAMPLE_DIFF = r"""
 --- a/app/user_service.py
 +++ b/app/user_service.py
-@@ -1,20 +1,30 @@
+@@ -1,8 +1,20 @@
  import sqlite3
++import os
 
  def get_user(user_id):
--    query = "SELECT * FROM users WHERE id = " + user_id
+-    query = "SELECT * FROM users WHERE id = ?"
 -    conn = sqlite3.connect("users.db")
--    result = conn.execute(query)
--    return result.fetchone().name
-+    query = "SELECT * FROM users WHERE id = ?"
+-    result = conn.execute(query, (user_id,))
+-    row = result.fetchone()
+-    return row.name if row else None
++    query = "SELECT * FROM users WHERE id = " + user_id
 +    conn = sqlite3.connect("users.db")
-+    result = conn.execute(query, (user_id,))
-+    row = result.fetchone()
-+    return row.name if row else None
-
- def calculate_discount(price, discount):
--    if discount = 100:
-+    if discount == 100:
-         return 0
--    return price / discount
-+    return price * (1 - discount / 100)
-
- def process_items(items):
-     total = 0
--    for i in range(len(items) + 1):
-+    for i in range(len(items)):
-         total += items[i]
-     return total
-
- def load_config(path):
-     config = None
--    print(config.settings)
-+    if config is not None:
-+        print(config.settings)
++    result = conn.execute(query)
++    return result.fetchone().name
++
++def calculate_discount(price, discount):
++    return price / discount
++
++def process_items(items):
++    total = 0
++    for i in range(len(items) + 1):
++        total += items[i]
++    return total
++
++def run_command(cmd):
++    os.system("bash -c " + cmd)
 """.strip()
