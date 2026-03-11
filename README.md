@@ -394,14 +394,14 @@ cp .env.example .env
 
 Fill in `.env` with your own keys:
 
-| Variable                | Where to get it                                                        |
-| ----------------------- | ---------------------------------------------------------------------- |
-| `GROQ_API_KEY`          | Free at [console.groq.com](https://console.groq.com)                  |
-| `GITHUB_APP_ID`         | From your GitHub App settings                                          |
-| `GITHUB_PRIVATE_KEY`    | PEM key downloaded when creating the GitHub App                        |
-| `GITHUB_WEBHOOK_SECRET` | Secret you set when creating the GitHub App                            |
+| Variable                | Where to get it                                                          |
+| ----------------------- | ------------------------------------------------------------------------ |
+| `GROQ_API_KEY`          | Free at [console.groq.com](https://console.groq.com)                     |
+| `GITHUB_APP_ID`         | From your GitHub App settings                                            |
+| `GITHUB_PRIVATE_KEY`    | PEM key downloaded when creating the GitHub App                          |
+| `GITHUB_WEBHOOK_SECRET` | Secret you set when creating the GitHub App                              |
 | `HF_TOKEN`              | [huggingface.co/settings/tokens](https://huggingface.co/settings/tokens) |
-| `INFERENCE_SPACE_ID`    | Your HuggingFace Space ID (or use `jayansh21/codesheriff-inference`)   |
+| `INFERENCE_SPACE_ID`    | Your HuggingFace Space ID (or use `jayansh21/codesheriff-inference`)     |
 
 Then start the server:
 
@@ -424,5 +424,3 @@ The model loads automatically from HuggingFace Hub — no local GPU or model dow
 - **HuggingFace Spaces** (Docker) — remote inference server
 - **Scikit-learn** — evaluation metrics
 - **PyTest** — testing
-
-
