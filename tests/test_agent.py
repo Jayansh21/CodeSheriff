@@ -296,3 +296,99 @@ class TestFormatReviewDetails:
         code = "def get_user(uid):\n    q = 'SELECT * FROM users WHERE id=' + uid\n    return db.execute(q)"
         offset = _find_issue_line_offset(code)
         assert offset == 1  # the SQL line is on line index 1
+
+
+# ---------------------------------------------------------------------------
+# Function chunking: boundary detection edge cases
+# ---------------------------------------------------------------------------
+
+class TestFunctionChunking:
+    """Edge cases for function-level chunk splitting."""
+
+    def test_async_def_boundary(self):
+        """async def is treated as a function boundary."""
+        diff = (
+            "--- a/svc.py\n"
+            "+++ b/svc.py\n"
+            "@@ -0,0 +1,6 @@\n"
+            "+async def fetch():\n"
+            "+    return await get()\n"
+            "+\n"
+            "+async def save(data):\n"
+            "+    await put(data)\n"
+            "+    return True\n"
+        )
+        result = parse_diff_node({"pr_diff": diff})
+        chunks = result["code_chunks"]
+        assert len(chunks) == 2
+        assert "fetch" in chunks[0]["code"]
+        assert "save" in chunks[1]["code"]
+
+    def test_chunk_carries_file_path(self):
+        """Every chunk records the originating file."""
+        diff = (
+            "--- a/my/module.py\n"
+            "+++ b/my/module.py\n"
+            "@@ -0,0 +1,3 @@\n"
+            "+def helper():\n"
+            "+    return 42\n"
+            "+\n"
+        )
+        result = parse_diff_node({"pr_diff": diff})
+        assert result["code_chunks"][0]["file"] == "my/module.py"
+
+    def test_large_chunk_capped(self):
+        """Chunks exceeding _MAX_CHUNK_LINES are split."""
+        from agents.nodes.parse_diff import _MAX_CHUNK_LINES
+        body = "\n".join(f"+    x_{i} = {i}" for i in range(_MAX_CHUNK_LINES + 10))
+        diff = (
+            "--- a/big.py\n"
+            "+++ b/big.py\n"
+            f"@@ -0,0 +1,{_MAX_CHUNK_LINES + 11} @@\n"
+            "+def big_func():\n"
+            f"{body}\n"
+        )
+        result = parse_diff_node({"pr_diff": diff})
+        for chunk in result["code_chunks"]:
+            lines = chunk["code"].splitlines()
+            assert len(lines) <= _MAX_CHUNK_LINES
+
+
+# ---------------------------------------------------------------------------
+# Issue-type resolution & label mapping
+# ---------------------------------------------------------------------------
+
+class TestIssueTypeMapping:
+    """Unit tests for _resolve_issue_type."""
+
+    def test_known_labels_mapped(self):
+        from agents.nodes.classify_chunks import _resolve_issue_type
+        assert _resolve_issue_type("Security Vulnerability") == "Security Vulnerability"
+        assert _resolve_issue_type("Null Reference Risk") == "Runtime Bug"
+        assert _resolve_issue_type("Type Mismatch") == "Type Bug"
+        assert _resolve_issue_type("Logic Flaw") == "Logic Bug"
+        assert _resolve_issue_type("Clean") == "Clean"
+
+    def test_unknown_label_fallback(self):
+        from agents.nodes.classify_chunks import _resolve_issue_type
+        assert _resolve_issue_type("SomethingNew") == "Code Issue"
+
+
+# ---------------------------------------------------------------------------
+# Format review: fix-section parser
+# ---------------------------------------------------------------------------
+
+class TestFixSectionParser:
+    """Unit tests for _parse_fix_sections in format_review."""
+
+    def test_extracts_code_block(self):
+        from agents.nodes.format_review import _parse_fix_sections
+        text = "This is bad.\n\n**Suggested Fix**\n```python\nx = safe()\n```\n"
+        sections = _parse_fix_sections(text)
+        assert "x = safe()" in sections["suggested_fix"]
+
+    def test_plain_text_preserved(self):
+        from agents.nodes.format_review import _parse_fix_sections
+        text = "Use parameterized queries to avoid SQL injection."
+        sections = _parse_fix_sections(text)
+        assert sections["explanation"] == text

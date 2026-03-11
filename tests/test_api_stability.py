@@ -20,9 +20,17 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-from backend.main import app
+from backend.main import app, limiter
 
 client = TestClient(app)
+
+
+@pytest.fixture(autouse=True)
+def _disable_rate_limit():
+    """Disable the rate limiter during stability tests."""
+    limiter.enabled = False
+    yield
+    limiter.enabled = True
 
 # ---------------------------------------------------------------------------
 # 20 diverse diff payloads
