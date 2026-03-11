@@ -124,6 +124,7 @@ async def root():
     <p>CodeSheriff uses a fine-tuned CodeBERT model to classify code issues and
        an LLM agent pipeline to generate actionable fix suggestions — posted
        directly as PR comments.</p>
+    <span class="badge" style="margin-top:12px;color:#d29922;border-color:#d29922">&#x1f40d; Currently optimized for Python projects</span>
   </div>
   <div class="cards">
     <div class="card">

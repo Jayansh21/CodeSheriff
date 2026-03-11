@@ -24,6 +24,7 @@ if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
 from utils.logger import get_logger
+from utils.language_detection import detect_languages_from_chunks
 
 logger = get_logger("agents.nodes.parse_diff")
 
@@ -116,4 +117,9 @@ def parse_diff_node(state: dict) -> dict:
     """LangGraph node: parse the PR diff into code chunks."""
     diff = state.get("pr_diff", "")
     chunks = _extract_chunks(diff)
-    return {"code_chunks": chunks}
+    lang_info = detect_languages_from_chunks(chunks)
+    return {
+        "code_chunks": chunks,
+        "language": lang_info["primary"],
+        "languages": lang_info["languages"],
+    }

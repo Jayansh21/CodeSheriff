@@ -4,80 +4,108 @@
 
 > **Live:** [codesheriff.onrender.com](https://codesheriff.onrender.com) &nbsp;|&nbsp; **Model:** [jayansh21/codesheriff-bug-classifier](https://huggingface.co/jayansh21/codesheriff-bug-classifier)
 
-CodeSheriff automatically reviews code diffs, classifies potential bugs using a fine-tuned CodeBERT model, prioritises issues by severity, and generates actionable fix suggestions using an LLM.
+CodeSheriff automatically reviews code diffs, classifies potential bugs using a fine-tuned CodeBERT model, prioritises issues by severity, and generates actionable fix suggestions using an LLM — posted directly as inline GitHub PR comments.
+
+---
+
+## How It Works
+
+1. **GitHub webhook** receives a pull request event.
+2. The PR diff is fetched and parsed into function-level code chunks.
+3. **Language detection** identifies the programming language from file extensions.
+4. A **fine-tuned CodeBERT** classifier predicts the bug category for each chunk.
+5. A confidence gate and pattern-based refinement rules filter false positives.
+6. Issues are prioritised by severity.
+7. A **Groq LLM** (Llama 3.3 70B) generates detailed explanations and fix suggestions.
+8. The review is formatted and posted as **inline PR comments** on the affected lines.
+
+---
+
+## Language Support
+
+CodeSheriff currently provides the most accurate analysis for **Python** code. The fine-tuned CodeBERT model was trained exclusively on Python datasets and achieves the best results on Python pull requests.
+
+Other languages (JavaScript, TypeScript, Java, Go, C++, etc.) will still run through the full pipeline, but results may be less reliable. When a non-Python language is detected, the review output includes a warning:
+
+> ⚠️ CodeSheriff is currently optimized for Python analysis.
+
+**Future plans:** Multi-language model training and language-specific rule sets are on the roadmap.
 
 ---
 
 ## Architecture
 
 ```
-Pull Request Diff
-       │
-       ▼
-┌──────────────┐
-│  Diff Parser │   (parse_diff.py)
-└──────┬───────┘
+GitHub PR Webhook
        │
        ▼
 ┌──────────────────────┐
-│  Bug Classifier      │   (classify_chunks.py → fine-tuned CodeBERT)
+│  Fetch PR Diff       │   (GitHub REST API)
 └──────┬───────────────┘
        │
        ▼
 ┌──────────────────────┐
-│  Issue Prioritiser   │   (prioritize_issues.py)
+│  Diff Parser         │   (parse_diff.py — function-level chunking)
+│  + Language Detection │   (language_detection.py — file extension mapping)
 └──────┬───────────────┘
        │
        ▼
 ┌──────────────────────┐
-│  Fix Generator       │   (generate_fixes.py → Groq / Llama 3)
+│  ML Classification   │   (classify_chunks.py → fine-tuned CodeBERT)
+│  + Confidence Gate   │   (threshold filtering + pattern refinement)
 └──────┬───────────────┘
        │
        ▼
 ┌──────────────────────┐
-│  Review Formatter    │   (format_review.py → Markdown output)
+│  Issue Prioritiser   │   (prioritize_issues.py — severity ranking)
+└──────┬───────────────┘
+       │
+       ▼
+┌──────────────────────┐
+│  Fix Generator       │   (generate_fixes.py → Groq / Llama 3.3)
+└──────┬───────────────┘
+       │
+       ▼
+┌──────────────────────┐
+│  Review Formatter    │   (format_review.py → Markdown + inline comments)
 └──────────────────────┘
 ```
 
-The pipeline is orchestrated using **LangGraph** as a sequential state machine.
+The pipeline is orchestrated using **LangGraph** as a sequential state machine with 5 processing nodes.
 
 ---
 
-## Project Structure
+## Example PR Review Output
 
 ```
-CodeSheriff/
-├── agents/                   # LangGraph agent pipeline
-│   ├── graph.py             # Wires the 5 processing nodes
-│   └── nodes/               # Individual pipeline steps
-├── backend/                 # FastAPI server
-│   ├── main.py              # Endpoints + webhook handler
-│   ├── github_auth.py       # GitHub App JWT + signature verification
-│   └── api_test.py          # Quick smoke test script
-├── ml/                      # Machine learning modules
-│   ├── dataset.py           # Data preparation & heuristic labelling
-│   ├── train.py             # Fine-tuning CodeBERT
-│   ├── evaluate.py          # Model evaluation & metrics
-│   └── inference.py         # Dual-mode prediction (HF Space or local)
-├── spaces/inference/        # HuggingFace Space (Docker) — remote ML server
-│   ├── app.py               # FastAPI model server
-│   ├── Dockerfile           # CPU-only torch + transformers
-│   └── requirements.txt
-├── data/                    # (gitignored) Raw & processed datasets
-├── models/                  # (gitignored) Saved model checkpoints
-├── utils/                   # Shared config & logging
-├── tests/                   # PyTest test suite
-├── scripts/                 # CLI runner + deployment helpers
-│   ├── run_pipeline.py
-│   ├── push_model_to_hub.py
-│   └── deploy_inference_space.py
-├── .env.example             # Template for required env vars
-├── render.yaml              # Render deployment config
-├── Procfile                 # Render fallback start command
-├── runtime.txt              # Python version pin for Render
-├── github-app-manifest.json # GitHub App creation template
-├── requirements.txt         # Production dependencies
-└── requirements-dev.txt     # Dev/test dependencies
+🛡️ CodeSheriff Review
+
+Language detected: Python
+
+Issues found: 3
+---
+
+## Issue 1: Security Vulnerability
+Confidence: 99%
+File: backend/db.py
+...
+
+## Issue 2: Logic Flaw
+Confidence: 95%
+File: utils/math.py
+...
+```
+
+When reviewing non-Python code:
+
+```
+🛡️ CodeSheriff Review
+
+Language detected: JavaScript
+⚠️ CodeSheriff is currently optimized for Python analysis.
+
+Issues found: 1
+...
 ```
 
 ---
@@ -88,9 +116,56 @@ CodeSheriff/
 | --- | ---------------------- | --------------------------------------- |
 | 0   | Clean                  | Well-formed code                        |
 | 1   | Null Reference Risk    | `result.fetchone().name` without check  |
-| 2   | Type Mismatch          | `if x = 100:` (assignment in condition) |
-| 3   | Security Vulnerability | SQL string concatenation                |
+| 2   | Type Mismatch          | `"Hello " + age` (str + int)            |
+| 3   | Security Vulnerability | SQL string concatenation, `os.system()` |
 | 4   | Logic Flaw             | `range(len(items) + 1)` off-by-one      |
+
+---
+
+## Project Structure
+
+```
+CodeSheriff/
+├── agents/                   # LangGraph agent pipeline
+│   ├── graph.py             # Wires the 5 processing nodes
+│   └── nodes/               # Individual pipeline steps
+│       ├── parse_diff.py    # Diff parsing + language detection
+│       ├── classify_chunks.py # ML classification + confidence gate
+│       ├── prioritize_issues.py # Severity-based prioritisation
+│       ├── generate_fixes.py # LLM fix generation (Groq)
+│       └── format_review.py # Markdown review formatting
+├── backend/                 # FastAPI server
+│   ├── main.py              # Endpoints + webhook handler
+│   ├── github_auth.py       # GitHub App JWT authentication
+│   └── api_test.py          # Quick smoke test script
+├── ml/                      # Machine learning modules
+│   ├── dataset.py           # Data preparation & heuristic labelling
+│   ├── train.py             # Fine-tuning CodeBERT
+│   ├── evaluate.py          # Model evaluation & metrics
+│   └── inference.py         # Dual-mode prediction (HF Space or local)
+├── spaces/inference/        # HuggingFace Space (Docker) — remote ML server
+│   ├── app.py               # FastAPI model server
+│   ├── Dockerfile           # CPU-only torch + transformers
+│   └── requirements.txt
+├── utils/                   # Shared utilities
+│   ├── config.py            # Environment variables & constants
+│   ├── logger.py            # Structured logging
+│   └── language_detection.py # Programming language detection
+├── tests/                   # PyTest test suite
+├── scripts/                 # CLI runner + deployment helpers
+│   ├── run_pipeline.py
+│   ├── push_model_to_hub.py
+│   └── deploy_inference_space.py
+├── data/                    # (gitignored) Raw & processed datasets
+├── models/                  # (gitignored) Saved model checkpoints
+├── .env.example             # Template for required env vars
+├── render.yaml              # Render deployment config
+├── Procfile                 # Render fallback start command
+├── runtime.txt              # Python version pin for Render
+├── github-app-manifest.json # GitHub App creation template
+├── requirements.txt         # Production dependencies
+└── requirements-dev.txt     # Dev/test dependencies
+```
 
 ---
 
@@ -126,35 +201,7 @@ cp .env.example .env
 
 ---
 
-## Training the Model
-
-### Prepare the Dataset
-
-```bash
-python -m ml.dataset
-```
-
-This downloads `code_search_net` (Python split), applies heuristic labels, and saves `data/processed/labeled_dataset.csv`.
-
-### Train the Classifier
-
-```bash
-python -m ml.train
-```
-
-> ⚠️ Training takes **3–6 hours on CPU**. The best model is saved to `models/codesheriff-model/final/`.
-
-### Evaluate the Model
-
-```bash
-python -m ml.evaluate
-```
-
-Prints a classification report and saves it to `models/codesheriff-model/evaluation_report.txt`.
-
----
-
-## Running the Pipeline
+## Running Locally
 
 ### CLI (no server required)
 
@@ -189,6 +236,34 @@ python backend/api_test.py
 
 ---
 
+## Training the Model
+
+### Prepare the Dataset
+
+```bash
+python -m ml.dataset
+```
+
+This downloads `code_search_net` (Python split), applies heuristic labels, and saves `data/processed/labeled_dataset.csv`.
+
+### Train the Classifier
+
+```bash
+python -m ml.train
+```
+
+> ⚠️ Training takes **3–6 hours on CPU** (much faster with GPU). The best model is saved to `models/codesheriff-model/final/`.
+
+### Evaluate the Model
+
+```bash
+python -m ml.evaluate
+```
+
+Prints a classification report and saves it to `models/codesheriff-model/evaluation_report.txt`.
+
+---
+
 ## Running Tests
 
 ```bash
@@ -210,6 +285,19 @@ All tests are designed to pass **before** model training completes (using heuris
 
 **Why a separate inference server?** Render free tier has 512 MB RAM. Loading PyTorch + the model takes ~500 MB, causing OOM crashes. By offloading inference to a HuggingFace Space, the Render backend stays under 100 MB.
 
+### Deploying on Render
+
+1. Connect your GitHub repository to [Render](https://render.com).
+2. Set the following environment variables in the Render dashboard:
+   - `GROQ_API_KEY` — Groq API key for LLM fix generation
+   - `HF_TOKEN` — HuggingFace token
+   - `MODEL_PATH` — HuggingFace model path (e.g. `jayansh21/codesheriff-bug-classifier`)
+   - `INFERENCE_SPACE_ID` — HuggingFace Space ID (e.g. `jayansh21/codesheriff-inference`)
+   - `USE_LOCAL_MODEL` — `false` (use remote inference)
+   - `GITHUB_APP_ID`, `GITHUB_PRIVATE_KEY`, `GITHUB_WEBHOOK_SECRET` — GitHub App credentials
+
+3. Render will auto-deploy on every push to `main`.
+
 ### Push Model to HuggingFace Hub
 
 ```bash
@@ -225,13 +313,12 @@ python scripts/deploy_inference_space.py
 
 This uploads `spaces/inference/` as a Docker-based HuggingFace Space.
 
-Then set in your `.env` (and Render Dashboard):
+### Using the GitHub App
 
-```
-MODEL_PATH=your-username/codesheriff-bug-classifier
-INFERENCE_SPACE_ID=your-username/codesheriff-inference
-USE_LOCAL_MODEL=false
-```
+1. Create a GitHub App using the manifest in `github-app-manifest.json`.
+2. Install the app on your repositories.
+3. Configure the webhook URL to point to `https://your-render-url.onrender.com/webhook`.
+4. CodeSheriff will automatically review every new pull request.
 
 ---
 

@@ -18,6 +18,7 @@ if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
 from utils.logger import get_logger
+from utils.language_detection import OPTIMIZED_LANGUAGE
 
 logger = get_logger("agents.nodes.format_review")
 
@@ -116,10 +117,17 @@ def _build_inline_body(label: str, confidence: float, fix_text: str) -> str:
 def format_review_node(state: dict) -> dict:
     """LangGraph node: produce a final Markdown review string + inline metadata."""
     suggestions: List[dict] = state.get("fix_suggestions", [])
+    language = state.get("language", "Unknown")
+
+    # Build the language header
+    lang_header = f"**Language detected:** {language}\n"
+    if language != OPTIMIZED_LANGUAGE and language != "Unknown":
+        lang_header += f"\n\u26a0\ufe0f _CodeSheriff is currently optimized for {OPTIMIZED_LANGUAGE} analysis._\n"
 
     if not suggestions:
         review = (
             "# \U0001f6e1\ufe0f CodeSheriff Review\n\n"
+            f"{lang_header}\n"
             "No issues detected \u2014 the code looks clean! :white_check_mark:\n"
         )
         return {
@@ -131,6 +139,7 @@ def format_review_node(state: dict) -> dict:
     # ---- Full review (backward-compatible) ----
     lines = [
         "# \U0001f6e1\ufe0f CodeSheriff Review\n",
+        f"{lang_header}\n",
         f"**Issues found:** {len(suggestions)}\n",
         "---\n",
     ]
@@ -182,6 +191,7 @@ def format_review_node(state: dict) -> dict:
     total = sum(type_counter.values())
     summary_lines = [
         "# \U0001f6e1\ufe0f CodeSheriff Review\n",
+        f"{lang_header}\n",
         f"**{total} issue{'s' if total != 1 else ''} detected.**\n",
     ]
     for issue_type, count in type_counter.most_common():

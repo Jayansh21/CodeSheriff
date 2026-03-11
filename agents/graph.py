@@ -36,6 +36,8 @@ logger = get_logger("agents.graph")
 class ReviewState(TypedDict):
     pr_diff: str
     code_chunks: List[dict]
+    language: str
+    languages: dict
     classifications: List[dict]
     prioritized_issues: List[dict]
     fix_suggestions: List[dict]
@@ -78,6 +80,8 @@ def run_review(pr_diff: str) -> dict:
     initial_state: ReviewState = {
         "pr_diff": pr_diff,
         "code_chunks": [],
+        "language": "",
+        "languages": {},
         "classifications": [],
         "prioritized_issues": [],
         "fix_suggestions": [],
@@ -90,6 +94,8 @@ def run_review(pr_diff: str) -> dict:
         "final_review": result.get("final_review", ""),
         "review_summary": result.get("review_summary", ""),
         "inline_comments": result.get("inline_comments", []),
+        "language": result.get("language", ""),
+        "languages": result.get("languages", {}),
     }
 
 
