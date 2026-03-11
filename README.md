@@ -16,7 +16,7 @@ CodeSheriff automatically reviews code diffs, classifies potential bugs using a 
 4. A **fine-tuned CodeBERT** classifier predicts the bug category for each chunk.
 5. A confidence gate and pattern-based refinement rules filter false positives.
 6. Issues are prioritised by severity.
-7. A **Groq LLM** (Llama 3.3 70B) generates detailed explanations and fix suggestions.
+7. All issues are sent in a **single batch prompt** to a **Groq LLM** for explanation and fix generation.
 8. The review is formatted and posted as **inline PR comments** on the affected lines.
 
 ---
@@ -62,7 +62,8 @@ GitHub PR Webhook
        │
        ▼
 ┌──────────────────────┐
-│  Fix Generator       │   (generate_fixes.py → Groq / Llama 3.3)
+│  Batch Explanation   │   (generate_fixes.py → Groq LLM, single prompt)
+│  + Model Fallback    │   (llama-3.3-70b → llama-3.1-8b on rate limit)
 └──────┬───────────────┘
        │
        ▼
@@ -322,12 +323,38 @@ This uploads `spaces/inference/` as a Docker-based HuggingFace Space.
 
 ---
 
+## LLM Architecture
+
+CodeSheriff uses **Groq**-hosted Llama models to generate human-readable explanations and fix suggestions for detected issues.
+
+| Role | Model | Notes |
+| --- | --- | --- |
+| Primary | `llama-3.3-70b-versatile` | Best quality explanations |
+| Fallback | `llama-3.1-8b-instant` | Used automatically when the primary model hits rate limits |
+
+**Batch prompting:** All issues found in a PR are sent to the LLM in a single prompt, rather than one call per issue. This significantly reduces token usage and latency.
+
+---
+
+## Rate Limit Handling
+
+Groq's free tier imposes a daily token quota (100K TPD). CodeSheriff handles this automatically:
+
+1. The primary model (`llama-3.3-70b-versatile`) is tried first.
+2. If Groq returns a **429 rate-limit** or **token quota** error, CodeSheriff immediately retries with the smaller fallback model (`llama-3.1-8b-instant`).
+3. Exponential backoff is applied between retries for transient errors.
+4. If both models are exhausted, a placeholder message is returned — the review still posts with ML classifications, just without LLM explanations.
+
+The pipeline **never crashes** due to Groq rate limits.
+
+---
+
 ## Tech Stack
 
 - **Python 3.11**
 - **PyTorch** + **HuggingFace Transformers** — model training & inference
 - **LangGraph** — agent orchestration (5-node sequential pipeline)
-- **Groq API** (Llama 3.3 70B) — LLM fix generation
+- **Groq API** (Llama 3.3 70B + 3.1 8B fallback) — LLM explanation generation
 - **FastAPI** — REST API + landing page
 - **SlowAPI** — rate limiting
 - **HuggingFace Spaces** (Docker) — remote inference server

@@ -81,6 +81,7 @@ CONFIDENCE_THRESHOLD: float = float(os.getenv("CONFIDENCE_THRESHOLD", "0.60"))
 # Groq LLM settings
 # ---------------------------------------------------------------------------
 GROQ_MODEL_NAME = "llama-3.3-70b-versatile"
+GROQ_FALLBACK_MODEL = "llama-3.1-8b-instant"
 GROQ_MAX_RETRIES = 3
 GROQ_TIMEOUT_SECONDS = 10
 

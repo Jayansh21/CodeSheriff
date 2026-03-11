@@ -135,7 +135,7 @@ async def root():
     <div class="card">
       <h3>&#x1f916; Agent Pipeline</h3>
       <p>LangGraph orchestrates 5 nodes: parse diff, classify, prioritise,
-         generate fixes (Groq LLM), and format the review.</p>
+         generate fixes (Groq LLM with automatic fallback), and format the review.</p>
     </div>
     <div class="card">
       <h3>&#x1f4ac; PR Comments</h3>
