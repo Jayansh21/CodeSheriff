@@ -327,10 +327,10 @@ This uploads `spaces/inference/` as a Docker-based HuggingFace Space.
 
 CodeSheriff uses **Groq**-hosted Llama models to generate human-readable explanations and fix suggestions for detected issues.
 
-| Role | Model | Notes |
-| --- | --- | --- |
-| Primary | `llama-3.3-70b-versatile` | Best quality explanations |
-| Fallback | `llama-3.1-8b-instant` | Used automatically when the primary model hits rate limits |
+| Role     | Model                     | Notes                                                      |
+| -------- | ------------------------- | ---------------------------------------------------------- |
+| Primary  | `llama-3.3-70b-versatile` | Best quality explanations                                  |
+| Fallback | `llama-3.1-8b-instant`    | Used automatically when the primary model hits rate limits |
 
 **Batch prompting:** All issues found in a PR are sent to the LLM in a single prompt, rather than one call per issue. This significantly reduces token usage and latency.
 
@@ -349,6 +349,70 @@ The pipeline **never crashes** due to Groq rate limits.
 
 ---
 
+## Use CodeSheriff on Your GitHub
+
+There are three ways to use CodeSheriff depending on what you need:
+
+### Option 1 — Install the GitHub App (recommended)
+
+This is the easiest way. Once installed, CodeSheriff automatically reviews every new pull request on your repos.
+
+1. **Create a GitHub App** using the manifest in `github-app-manifest.json` (or ask the project owner to install theirs on your repo).
+2. **Set the webhook URL** to your deployed backend, e.g. `https://codesheriff.onrender.com/webhook`.
+3. **Install the app** on whichever repositories you want reviewed.
+4. Open a pull request — CodeSheriff will post inline review comments automatically.
+
+> Contributors on your repo don't need to install anything. They just open PRs and see the review comments.
+
+### Option 2 — Use the Live API
+
+Anyone can send a unified diff to the public API — no authentication needed:
+
+```bash
+# Review your own diff
+curl -X POST https://codesheriff.onrender.com/review \
+  -H "Content-Type: application/json" \
+  -d '{"diff": "<your unified diff text>"}'
+
+# Quick test with the built-in sample
+curl -X POST https://codesheriff.onrender.com/test-diff
+```
+
+### Option 3 — Self-host the entire project
+
+Fork or clone the repository and run your own instance:
+
+```bash
+git clone https://github.com/jayansh21/CodeSheriff.git
+cd CodeSheriff
+python -m venv venv
+venv\Scripts\activate          # Windows
+# source venv/bin/activate      # macOS / Linux
+pip install -r requirements.txt
+cp .env.example .env
+```
+
+Fill in `.env` with your own keys:
+
+| Variable                | Where to get it                                                        |
+| ----------------------- | ---------------------------------------------------------------------- |
+| `GROQ_API_KEY`          | Free at [console.groq.com](https://console.groq.com)                  |
+| `GITHUB_APP_ID`         | From your GitHub App settings                                          |
+| `GITHUB_PRIVATE_KEY`    | PEM key downloaded when creating the GitHub App                        |
+| `GITHUB_WEBHOOK_SECRET` | Secret you set when creating the GitHub App                            |
+| `HF_TOKEN`              | [huggingface.co/settings/tokens](https://huggingface.co/settings/tokens) |
+| `INFERENCE_SPACE_ID`    | Your HuggingFace Space ID (or use `jayansh21/codesheriff-inference`)   |
+
+Then start the server:
+
+```bash
+uvicorn backend.main:app --reload
+```
+
+The model loads automatically from HuggingFace Hub — no local GPU or model download required (unless you set `USE_LOCAL_MODEL=true`).
+
+---
+
 ## Tech Stack
 
 - **Python 3.11**
@@ -361,8 +425,4 @@ The pipeline **never crashes** due to Groq rate limits.
 - **Scikit-learn** — evaluation metrics
 - **PyTest** — testing
 
----
 
-## License
-
-MIT
