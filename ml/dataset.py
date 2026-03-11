@@ -49,18 +49,18 @@ np.random.seed(SEED)
 # ---------------------------------------------------------------------------
 TARGET_COUNTS = {
     0: 3000,   # Clean
-    1: 500,    # Null Reference Risk
-    2: 300,    # Type Mismatch
-    3: 300,    # Security Vulnerability
-    4: 500,    # Logic Flaw
+    1: 800,    # Null Reference Risk  (was 500 — more seeds now)
+    2: 500,    # Type Mismatch        (was 300)
+    3: 500,    # Security Vulnerability (was 300)
+    4: 800,    # Logic Flaw           (was 500)
 }
 
 VALIDATION_THRESHOLDS = {
     0: 2000,   # Clean
-    1: 350,    # Null Reference Risk
-    2: 200,    # Type Mismatch
-    3: 200,    # Security Vulnerability
-    4: 350,    # Logic Flaw
+    1: 600,    # Null Reference Risk
+    2: 350,    # Type Mismatch
+    3: 350,    # Security Vulnerability
+    4: 600,    # Logic Flaw
 }
 
 
@@ -68,6 +68,7 @@ VALIDATION_THRESHOLDS = {
 # Seed templates for scarce classes
 # ---------------------------------------------------------------------------
 SECURITY_SEEDS = [
+    # --- Original 10 ---
     'def get_user(uid):\n    query = "SELECT * FROM users WHERE id = " + uid\n    return db.execute(query)',
     "def search(term):\n    sql = f\"SELECT * FROM products WHERE name = '{term}'\"\n    cursor.execute(sql)",
     'def run_cmd(cmd):\n    os.system("ls " + cmd)',
@@ -78,9 +79,21 @@ SECURITY_SEEDS = [
     'def get_config(key):\n    cmd = "cat /etc/config/" + key\n    os.system(cmd)',
     'def fetch(table, col, val):\n    q = "SELECT " + col + " FROM " + table + " WHERE x=" + val\n    return db.run(q)',
     "def render(template, data):\n    return eval(f\"f'{template}'\")",
+    # --- Real-world CWE patterns ---
+    'def update_user(uid, name):\n    sql = "UPDATE users SET name=\'%s\' WHERE id=%s" % (name, uid)\n    db.execute(sql)',
+    'def delete_record(table, rid):\n    db.execute("DELETE FROM " + table + " WHERE id=" + str(rid))',
+    'def read_user_file(filename):\n    with open("/data/" + filename) as f:\n        return f.read()',
+    'def deserialize(data):\n    import pickle\n    return pickle.loads(data)',
+    'def exec_code(code_str):\n    exec(code_str)',
+    'def make_request(url):\n    import requests\n    return requests.get(url).text',
+    'def log_query(user_input):\n    query = f"INSERT INTO logs (msg) VALUES (\'{user_input}\')"\n    db.execute(query)',
+    'def render_page(template_str):\n    from jinja2 import Template\n    return Template(template_str).render()',
+    'def run_script(script_name):\n    os.system("python " + script_name)',
+    'def admin_action(action):\n    subprocess.Popen(action, shell=True)',
 ]
 
 TYPE_MISMATCH_SEEDS = [
+    # --- Original 10 ---
     'def greet(name, age):\n    return "Hello " + name + " you are " + age',
     'def calc(val):\n    if val = 10:\n        return True',
     'def check(score):\n    if score == "100":\n        return "perfect"',
@@ -91,9 +104,21 @@ TYPE_MISMATCH_SEEDS = [
     'def validate(x):\n    if x = None:\n        raise ValueError("empty")',
     'def format_id(id):\n    return "ID-" + id',
     'def merge(text, num):\n    return text + num + " items"',
+    # --- Real-world type confusion patterns ---
+    'def display(status, count):\n    return "Status: " + status + ", Count: " + count',
+    'def log_event(event, timestamp):\n    print("Event " + event + " at " + timestamp)',
+    'def build_path(base, segment):\n    return base + "/" + segment + "/" + id',
+    'def format_price(amount):\n    return "$" + amount',
+    'def create_key(prefix, index):\n    return prefix + "_" + index',
+    'def concat_results(header, data, footer):\n    return header + data + footer + 0',
+    'def build_url(host, port):\n    return "http://" + host + ":" + port',
+    'def render_row(name, score):\n    return "<tr><td>" + name + "</td><td>" + score + "</td></tr>"',
+    'def label(category, num):\n    return category + ": " + num + " items"',
+    'def summary(title, count, pct):\n    return title + " - " + count + " (" + pct + "%)"',
 ]
 
 NULL_REFERENCE_SEEDS = [
+    # --- Original 15 ---
     'def get_name(uid):\n    user = db.fetchone()\n    return user.name',
     'def load_config(path):\n    config = None\n    print(config.settings)',
     'def first_item(cursor):\n    row = cursor.fetchone()\n    return row["id"]',
@@ -109,9 +134,37 @@ NULL_REFERENCE_SEEDS = [
     'def extract_email(record):\n    email = record.get("email")\n    return email.split("@")[0]',
     'def get_price(product):\n    price = product.get("price")\n    return float(price)',
     'def read_env(key):\n    val = os.environ.get(key)\n    return val.upper()',
+    # --- Chained attribute access (real-world) ---
+    'def get_city(user):\n    profile = user.get("profile")\n    return profile["address"]["city"]',
+    'def first_tag(post):\n    tags = post.get("tags")\n    return tags[0].lower()',
+    'def author_name(book):\n    author = book.get("author")\n    return author.first_name + " " + author.last_name',
+    # --- Optional / nullable return values ---
+    'def get_manager(emp):\n    mgr = emp.manager\n    return mgr.email',
+    'def next_task(queue):\n    task = queue.pop()\n    return task.priority',
+    'def latest_log(db):\n    entry = db.logs.find_one(sort=[("ts", -1)])\n    return entry["message"]',
+    # --- Iterator / generator exhaustion ---
+    'def first_result(gen):\n    item = next(gen)\n    return item.value',
+    'def read_line(fp):\n    line = fp.readline()\n    return line.strip().split(",")[0]',
+    # --- Multi-step null chains ---
+    'def process_payment(order):\n    card = order.get("payment")\n    last4 = card["number"][-4:]\n    return last4',
+    'def resolve_host(config):\n    host = config.get("database", {}).get("host")\n    return host.split(":")[0]',
+    'def get_token(headers):\n    auth = headers.get("Authorization")\n    return auth.replace("Bearer ", "")',
+    # --- Real-world API patterns ---
+    'def parse_webhook(data):\n    event = data.get("event")\n    return event["type"]',
+    'def extract_id(response):\n    body = response.json()\n    return body["data"]["id"]',
+    'def get_error_msg(resp):\n    err = resp.json().get("error")\n    return err["message"]',
+    # --- Database cursor patterns ---
+    'def fetch_username(cursor, uid):\n    cursor.execute("SELECT name FROM users WHERE id=%s", (uid,))\n    row = cursor.fetchone()\n    return row[0]',
+    'def get_balance(conn, acct):\n    result = conn.execute("SELECT balance FROM accounts WHERE id=?", (acct,))\n    return result.fetchone()["balance"]',
+    # --- None-returning function chains ---
+    'def find_match(items, key):\n    match = None\n    for item in items:\n        if item.key == key:\n            match = item\n    return match.value',
+    'def search(db, query):\n    result = db.search(query)\n    return result.title',
+    'def pop_first(stack):\n    item = stack.pop(0) if stack else None\n    return item.name',
+    'def get_conn(pool):\n    conn = pool.get_connection()\n    return conn.cursor()',
 ]
 
 LOGIC_FLAW_SEEDS = [
+    # --- Original 15 ---
     'def total(items):\n    s = 0\n    for i in range(len(items) + 1):\n        s += items[i]\n    return s',
     'def avg(values):\n    return sum(values) / len(values)',
     'def discount(price, pct):\n    return price / pct',
@@ -127,6 +180,17 @@ LOGIC_FLAW_SEEDS = [
     'def mean_score(scores):\n    return sum(scores) / len(scores)',
     'def pct_change(old, new):\n    return (new - old) / old * 100',
     'def safe_div(a, b):\n    if b == 0 or None:\n        return 0\n    return a / b',
+    # --- Real-world logic patterns ---
+    'def index_of(arr, target):\n    for i in range(len(arr) + 1):\n        if arr[i] == target:\n            return i\n    return -1',
+    'def clamp(val, lo, hi):\n    if val < lo or hi:\n        return lo\n    return val',
+    'def median(data):\n    mid = len(data) / 2\n    return data[mid]',
+    'def fibonacci(n):\n    if n == 0:\n        return 0\n    a, b = 0, 1\n    for _ in range(n + 1):\n        a, b = b, a + b\n    return a',
+    'def deduplicate(items):\n    seen = set()\n    for item in items:\n        if item not in seen:\n            seen.add(item)\n    return items',
+    'def rotate(arr, k):\n    return arr[k:] + arr[:k+1]',
+    'def power(base, exp):\n    result = 0\n    for _ in range(exp):\n        result *= base\n    return result',
+    'def flatten(nested):\n    result = []\n    for sub in nested:\n        result.append(sub)\n    return result',
+    'def is_palindrome(s):\n    return s == s[::-1].lower()',
+    'def max_profit(prices):\n    profit = 0\n    for i in range(len(prices)):\n        for j in range(i, len(prices)):\n            profit = max(profit, prices[j] - prices[i])\n    return profit',
 ]
 
 

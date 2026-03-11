@@ -53,10 +53,13 @@ def predict(data: dict):
     label_id = int(torch.argmax(probs).item())
     confidence = float(probs[label_id].item())
 
+    all_probs = {str(i): round(float(probs[i].item()), 4) for i in range(len(probs))}
+
     return {
         "label": LABEL_NAMES.get(label_id, f"Unknown({label_id})"),
         "confidence": round(confidence, 4),
         "label_id": label_id,
+        "all_probs": all_probs,
     }
 
 

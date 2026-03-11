@@ -80,8 +80,8 @@ LOGIC_FLAW_SNIPPETS = [
 
 CLEAN_SNIPPETS = [
     (
-        "def greet(name):\n    print(name)\n    return name.upper()",
-        0, "Clean greeting function"
+        "class Counter:\n    def __init__(self):\n        self.count = 0\n    def increment(self):\n        self.count += 1\n    def get_count(self):\n        return self.count",
+        0, "Clean Counter class"
     ),
 ]
 
