@@ -62,35 +62,126 @@ def _resolve_issue_type(raw_label: str) -> str:
     return _LABEL_TYPE_MAP.get(raw_label, "Code Issue")
 
 
+# Reverse map: user-facing issue type → representative label_id
+# Used when refinement upgrades a Clean chunk (label_id 0) to an issue.
+_ISSUE_TYPE_TO_LABEL_ID = {
+    "Security Vulnerability": 3,
+    "Runtime Bug": 1,
+    "Type Bug": 2,
+    "Logic Bug": 4,
+    "Code Quality": 0,
+    "Clean": 0,
+}
+
+
 # ---------------------------------------------------------------------------
-# Light post-classification refinement rules.
-# These only run when ML confidence is borderline (< 0.75) and only
-# *adjust* the resolved issue_type — they never bypass the ML model.
+# Trivial-chunk filter
+# Skips chunks that contain no meaningful logic (imports, bare declarations,
+# blank lines, etc.) to avoid false positives from non-functional fragments.
 # ---------------------------------------------------------------------------
-_BORDERLINE_CEILING = 0.75  # rules only fire below this confidence
+_IMPORT_RE = re.compile(r"^\s*(?:import\s|from\s\S+\s+import\s)")
+_BARE_DECL_RE = re.compile(r"^\s*(?:class\s+\w+|def\s+\w+|async\s+def\s+\w+)")
+_ASSIGNMENT_RE = re.compile(r"^\s*self\.\w+\s*=")
+_PASS_DOCSTRING_RE = re.compile(r'^\s*(?:pass|"""|\'\'\'|#)')
+
+
+def _is_trivial_chunk(code: str) -> bool:
+    """
+    Return True if the chunk contains no meaningful logic worth classifying.
+
+    Trivial chunks include:
+      - Import-only blocks
+      - Bare class/function declarations without a body
+      - Chunks with only assignments, pass, docstrings, or comments
+    """
+    lines = [ln for ln in code.splitlines() if ln.strip()]
+    if not lines:
+        return True
+
+    # Count how many lines are "structural" vs "logic"
+    structural = 0
+    for ln in lines:
+        stripped = ln.strip()
+        if (_IMPORT_RE.match(stripped)
+                or _BARE_DECL_RE.match(stripped)
+                or _PASS_DOCSTRING_RE.match(stripped)
+                or stripped == ""):
+            structural += 1
+
+    logic_lines = len(lines) - structural
+
+    # If there are no logic lines, it's trivial
+    if logic_lines == 0:
+        return True
+
+    # A single assignment (e.g. self.db = ...) with no other logic is trivial
+    if logic_lines == 1:
+        for ln in lines:
+            stripped = ln.strip()
+            if (not _IMPORT_RE.match(stripped)
+                    and not _BARE_DECL_RE.match(stripped)
+                    and not _PASS_DOCSTRING_RE.match(stripped)
+                    and _ASSIGNMENT_RE.match(stripped)):
+                return True
+
+    return False
+
+
+# ---------------------------------------------------------------------------
+# Post-classification refinement rules.
+#
+# Two tiers:
+#   HIGH-SIGNAL — patterns the ML model consistently misclassifies as Clean.
+#                 These run regardless of ML confidence because the model has
+#                 a known blind spot for them.
+#   BORDERLINE  — softer adjustments that only fire when ML confidence is
+#                 below _BORDERLINE_CEILING so strong ML predictions are
+#                 respected.
+#
+# All rules *adjust* the issue type after ML runs — they never bypass it.
+# ---------------------------------------------------------------------------
+_BORDERLINE_CEILING = 0.75
+
+# Compiled once — each tuple is (pattern, target_issue_type).
+_HIGH_SIGNAL_RULES = [
+    # `if x == val or "literal":` — always-True logic bug
+    (re.compile(r'\bif\b.+\bor\s+["\'][^"\']+["\']'), "Logic Bug"),
+    # `if x == val or var:` without comparison — truthiness bug
+    (re.compile(r"\bif\s+\w+\s*==\s*.+?\bor\s+\w+\s*:"), "Logic Bug"),
+    # Division by len() of possibly-empty collection
+    (re.compile(r"/\s*len\("), "Runtime Bug"),
+    # Unguarded .fetchone()[index]
+    (re.compile(r"\.fetchone\(\)\s*\["), "Runtime Bug"),
+    # Unguarded .fetchone().attr
+    (re.compile(r"\.fetchone\(\)\.\w+"), "Runtime Bug"),
+]
+
+_BORDERLINE_RULES = [
+    # subprocess / os.system with shell=True or string concat
+    (re.compile(r"\bsubprocess\.\w+\(.+shell\s*=\s*True", re.DOTALL), "Security Vulnerability"),
+    (re.compile(r"\bos\.system\s*\("), "Security Vulnerability"),
+]
 
 
 def _refine_issue_type(issue_type: str, confidence: float, code: str) -> str:
     """
-    Optionally adjust *issue_type* based on obvious code patterns.
+    Adjust *issue_type* based on well-known code patterns the ML model
+    has blind spots for.
 
-    Only activates when confidence is borderline (< 0.75) so that
-    strong ML predictions are never overridden.
+    High-signal rules run regardless of confidence (model is known to
+    mis-classify these as Clean).  Borderline rules only fire when
+    confidence < 0.75.
     """
-    if confidence >= _BORDERLINE_CEILING:
-        return issue_type
+    # High-signal rules — always apply
+    for pattern, target in _HIGH_SIGNAL_RULES:
+        if pattern.search(code):
+            return target
 
-    # Division by a value that may be zero  (e.g. / len(...))
-    if re.search(r"/\s*len\(", code):
-        return "Runtime Bug"
-
-    # Unguarded .fetchone()[index]  — common null-deref crash
-    if re.search(r"\.fetchone\(\)\s*\[", code):
-        return "Runtime Bug"
-
-    # Unguarded .fetchone().attr  — same class of crash
-    if re.search(r"\.fetchone\(\)\.\w+", code):
-        return "Runtime Bug"
+    # Borderline rules — only when ML is uncertain
+    if confidence < _BORDERLINE_CEILING:
+        for pattern, target in _BORDERLINE_RULES:
+            if pattern.search(code):
+                return target
 
     return issue_type
 
@@ -123,6 +214,11 @@ def classify_chunks_node(state: dict) -> dict:
         # Skip overly large chunks (performance safeguard)
         if code.count("\n") > 100:
             logger.debug("Chunk %d skipped (>100 lines).", i)
+            continue
+
+        # Skip trivial chunks (imports, bare declarations, etc.)
+        if _is_trivial_chunk(code):
+            logger.debug("Chunk %d skipped (trivial — no logic).", i)
             continue
 
         labels: List[dict] = []
@@ -166,6 +262,7 @@ def classify_chunks_node(state: dict) -> dict:
         for lbl in labels:
             conf = lbl["confidence"]
             raw_type = lbl["type"]
+            label_id = lbl["label_id"]
 
             # Step 1 — resolve model label to user-facing issue type
             issue_type = _resolve_issue_type(raw_type)
@@ -178,13 +275,23 @@ def classify_chunks_node(state: dict) -> dict:
                 )
                 issue_type = "Code Quality"
 
-            # Step 3 — light rule-based refinement (borderline only)
-            issue_type = _refine_issue_type(issue_type, conf, code)
+            # Step 3 — pattern-based refinement (may upgrade Clean/Code Quality)
+            refined = _refine_issue_type(issue_type, conf, code)
+
+            # If refinement changed the issue type, update label_id so
+            # prioritize_issues doesn't filter it as Clean (label_id 0).
+            if refined != issue_type:
+                logger.debug(
+                    "Chunk %d: refinement '%s' -> '%s'.", i, issue_type, refined,
+                )
+                issue_type = refined
+                if label_id == 0:
+                    label_id = _ISSUE_TYPE_TO_LABEL_ID.get(issue_type, 4)
 
             classifications.append({
                 "label": issue_type,
                 "confidence": conf,
-                "label_id": lbl["label_id"],
+                "label_id": label_id,
                 "chunk_index": i,
                 "code": code,
                 "file": file_path,
