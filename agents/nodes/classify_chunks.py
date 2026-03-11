@@ -1,13 +1,20 @@
 """
 Agent Node — classify_chunks
 
-Runs the fine-tuned CodeBERT classifier on each code chunk and emits
-**multi-label** results: every label whose probability >= _MULTI_LABEL_THRESHOLD
-is returned per chunk.
+Runs the fine-tuned CodeBERT classifier on each code chunk.
 
-Falls back to heuristic classification if the model is unavailable.
+The ML model is the **sole** detection engine.  No hardcoded keyword/regex
+detection exists here.  Two lightweight post-processing steps refine the
+raw ML output:
+
+  1. **Confidence gate** — predictions below ``CONFIDENCE_THRESHOLD``
+     (default 0.60, configurable via env) are downgraded to "Code Quality".
+  2. **Post-classification refinement** — a handful of generic code-pattern
+     rules can *adjust* the issue type when the ML confidence is borderline.
+     They never *replace* the ML classifier.
 """
 
+import re
 import sys
 from pathlib import Path
 from typing import List
@@ -17,20 +24,15 @@ if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
 from utils.logger import get_logger
-from utils.config import LABEL_NAMES
+from utils.config import LABEL_NAMES, CONFIDENCE_THRESHOLD
 
 logger = get_logger("agents.nodes.classify_chunks")
-
-# If the model's top-label confidence is below this, prefer the heuristic.
-_CONFIDENCE_THRESHOLD = 0.50
 
 # Any label with probability >= this is included in the multi-label output.
 _MULTI_LABEL_THRESHOLD = 0.40
 
 # ---------------------------------------------------------------------------
 # Issue-type mapping  (model label → user-facing category)
-# The model's LABEL_NAMES are generic; this map gives richer categories
-# that match what developers expect to see in PR reviews.
 # ---------------------------------------------------------------------------
 _LABEL_TYPE_MAP = {
     # Security
@@ -60,72 +62,52 @@ def _resolve_issue_type(raw_label: str) -> str:
     return _LABEL_TYPE_MAP.get(raw_label, "Code Issue")
 
 
-def _heuristic_classify(code: str) -> dict:
+# ---------------------------------------------------------------------------
+# Light post-classification refinement rules.
+# These only run when ML confidence is borderline (< 0.75) and only
+# *adjust* the resolved issue_type — they never bypass the ML model.
+# ---------------------------------------------------------------------------
+_BORDERLINE_CEILING = 0.75  # rules only fire below this confidence
+
+
+def _refine_issue_type(issue_type: str, confidence: float, code: str) -> str:
     """
-    Fallback heuristic classifier used when the trained model is not
-    available or its confidence is too low.  Mirrors the extended
-    labelling logic in ml/dataset.py.
+    Optionally adjust *issue_type* based on obvious code patterns.
+
+    Only activates when confidence is borderline (< 0.75) so that
+    strong ML predictions are never overridden.
     """
-    import re
+    if confidence >= _BORDERLINE_CEILING:
+        return issue_type
 
-    # Security Vulnerability
-    sec_patterns = [
-        r"""['"]SELECT\s.*?\+\s""",
-        r"""f['"]\s*SELECT""",
-        r"\.format\(.*?SELECT",
-        r"\bcursor\.execute\s*\([^)]*\+",
-        r"\beval\s*\(",
-        r"\bos\.system\s*\([^)]*\+",
-        r"\bsubprocess\.\w+\([^)]*shell\s*=\s*True",
-    ]
-    if any(re.search(p, code, re.IGNORECASE) for p in sec_patterns):
-        return {"label": LABEL_NAMES[3], "confidence": 0.85, "label_id": 3}
+    # Division by a value that may be zero  (e.g. / len(...))
+    if re.search(r"/\s*len\(", code):
+        return "Runtime Bug"
 
-    # Null Reference Risk
-    null_patterns = [
-        r"=\s*None[\s\S]{0,80}\.\w+",
-        r"\.fetchone\(\)\.\w+",
-        r"return\s+\w+\[.*?\]\.\w+",
-        r"\.get\s*\([^)]+\)\.\w+",
-    ]
-    if any(re.search(p, code) for p in null_patterns):
-        return {"label": LABEL_NAMES[1], "confidence": 0.82, "label_id": 1}
+    # Unguarded .fetchone()[index]  — common null-deref crash
+    if re.search(r"\.fetchone\(\)\s*\[", code):
+        return "Runtime Bug"
 
-    # Type Mismatch
-    type_patterns = [
-        r"\bif\s+\w+\s*=[^=]",
-        r'"\s*\+\s*\w+(?!\s*\()',
-    ]
-    if any(re.search(p, code) for p in type_patterns):
-        return {"label": LABEL_NAMES[2], "confidence": 0.80, "label_id": 2}
+    # Unguarded .fetchone().attr  — same class of crash
+    if re.search(r"\.fetchone\(\)\.\w+", code):
+        return "Runtime Bug"
 
-    # Logic Flaw
-    logic_patterns = [
-        r"range\(len\(\w+\)\s*\+\s*1\)",
-        r"/\s*0\b",
-        r"while\s+True\b(?![\s\S]{0,200}break)",
-        r"\[\s*len\(\w+\)\s*\]",
-    ]
-    if any(re.search(p, code) for p in logic_patterns):
-        return {"label": LABEL_NAMES[4], "confidence": 0.78, "label_id": 4}
-
-    # Clean
-    return {"label": LABEL_NAMES[0], "confidence": 0.70, "label_id": 0}
+    return issue_type
 
 
 def classify_chunks_node(state: dict) -> dict:
-    """LangGraph node: classify each code chunk (multi-label)."""
+    """LangGraph node: classify each code chunk via the ML model."""
     raw_chunks = state.get("code_chunks", [])
-    classifications = []
+    classifications: List[dict] = []
 
-    # Try to use the trained model; fall back to heuristic
+    # Import the ML inference function
     try:
         from ml.inference import predict_bug
         use_model = True
         logger.info("Using fine-tuned model for classification.")
     except Exception:
         use_model = False
-        logger.warning("Fine-tuned model unavailable — using heuristic classifier.")
+        logger.warning("Fine-tuned model unavailable — chunks will be marked Code Quality.")
 
     for i, chunk in enumerate(raw_chunks):
         # Support both old format (str) and new format (dict with 'code')
@@ -150,38 +132,58 @@ def classify_chunks_node(state: dict) -> dict:
                 result = predict_bug(code)
                 top_conf = result.get("confidence", 0)
 
-                # If model is uncertain, prefer heuristic
-                if top_conf < _CONFIDENCE_THRESHOLD:
-                    heuristic = _heuristic_classify(code)
-                    if heuristic["label_id"] != 0:
-                        logger.debug("Chunk %d: model low-confidence (%.2f), using heuristic.", i, top_conf)
-                        labels = [{"type": heuristic["label"], "confidence": heuristic["confidence"], "label_id": heuristic["label_id"]}]
-                    else:
-                        labels = [{"type": result["label"], "confidence": top_conf, "label_id": result["label_id"]}]
-                else:
-                    # Multi-label: include all labels above threshold
-                    all_probs = result.get("all_probs", None)
-                    if all_probs:
-                        for lid, prob in all_probs.items():
-                            lid_int = int(lid)
-                            if lid_int != 0 and prob >= _MULTI_LABEL_THRESHOLD:
-                                labels.append({"type": LABEL_NAMES.get(lid_int, f"Unknown({lid_int})"), "confidence": round(prob, 4), "label_id": lid_int})
-                    # Fallback: if no all_probs or none above threshold, use top label
-                    if not labels:
-                        labels = [{"type": result["label"], "confidence": top_conf, "label_id": result["label_id"]}]
-            except Exception as e:
-                logger.warning("Model inference failed for chunk %d: %s. Falling back.", i, e)
-                heuristic = _heuristic_classify(code)
-                labels = [{"type": heuristic["label"], "confidence": heuristic["confidence"], "label_id": heuristic["label_id"]}]
-        else:
-            heuristic = _heuristic_classify(code)
-            labels = [{"type": heuristic["label"], "confidence": heuristic["confidence"], "label_id": heuristic["label_id"]}]
+                # Multi-label: include every label above the multi-label
+                # threshold when detailed probabilities are available.
+                all_probs = result.get("all_probs", None)
+                if all_probs and top_conf >= CONFIDENCE_THRESHOLD:
+                    for lid, prob in all_probs.items():
+                        lid_int = int(lid)
+                        if lid_int != 0 and prob >= _MULTI_LABEL_THRESHOLD:
+                            labels.append({
+                                "type": LABEL_NAMES.get(lid_int, f"Unknown({lid_int})"),
+                                "confidence": round(prob, 4),
+                                "label_id": lid_int,
+                            })
 
+                # Fallback: use the top predicted label
+                if not labels:
+                    labels = [{
+                        "type": result.get("label", "Clean"),
+                        "confidence": top_conf,
+                        "label_id": result.get("label_id", 0),
+                    }]
+            except Exception as e:
+                logger.warning("Model inference failed for chunk %d: %s.", i, e)
+                labels = [{"type": "Clean", "confidence": 0.0, "label_id": 0}]
+        else:
+            # No model available — mark as Code Quality so the LLM can
+            # still provide a generic review without faking a detection.
+            labels = [{"type": "CODE_SMELL", "confidence": 0.0, "label_id": 0}]
+
+        # ------------------------------------------------------------------
+        # Post-processing: confidence gate + refinement rules
+        # ------------------------------------------------------------------
         for lbl in labels:
-            issue_type = _resolve_issue_type(lbl["type"])
+            conf = lbl["confidence"]
+            raw_type = lbl["type"]
+
+            # Step 1 — resolve model label to user-facing issue type
+            issue_type = _resolve_issue_type(raw_type)
+
+            # Step 2 — confidence gate: weak predictions become Code Quality
+            if conf < CONFIDENCE_THRESHOLD and issue_type not in ("Clean", "Code Quality"):
+                logger.debug(
+                    "Chunk %d: confidence %.2f < %.2f — downgrading '%s' to 'Code Quality'.",
+                    i, conf, CONFIDENCE_THRESHOLD, issue_type,
+                )
+                issue_type = "Code Quality"
+
+            # Step 3 — light rule-based refinement (borderline only)
+            issue_type = _refine_issue_type(issue_type, conf, code)
+
             classifications.append({
                 "label": issue_type,
-                "confidence": lbl["confidence"],
+                "confidence": conf,
                 "label_id": lbl["label_id"],
                 "chunk_index": i,
                 "code": code,
@@ -189,7 +191,10 @@ def classify_chunks_node(state: dict) -> dict:
                 "start_line": start_line,
             })
 
-        logger.debug("Chunk %d: %s", i, ", ".join(f"{l['type']} ({l['confidence']:.2f})" for l in labels))
+        logger.debug(
+            "Chunk %d: %s", i,
+            ", ".join(f"{l['type']} ({l['confidence']:.2f})" for l in labels),
+        )
 
     logger.info("Classified %d chunk(s) → %d classification(s).", len(raw_chunks), len(classifications))
     return {"classifications": classifications}

@@ -72,6 +72,12 @@ LEARNING_RATE = 2e-5
 MAX_DATASET_SAMPLES = 10_000
 
 # ---------------------------------------------------------------------------
+# Classification confidence threshold
+# Predictions below this are downgraded to "Code Quality".
+# ---------------------------------------------------------------------------
+CONFIDENCE_THRESHOLD: float = float(os.getenv("CONFIDENCE_THRESHOLD", "0.60"))
+
+# ---------------------------------------------------------------------------
 # Groq LLM settings
 # ---------------------------------------------------------------------------
 GROQ_MODEL_NAME = "llama-3.3-70b-versatile"
