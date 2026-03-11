@@ -308,11 +308,44 @@ async def _process_webhook(payload: dict):
 
         # ---------------------------------------------------------------
         # Feature 4 — Post inline PR comments (max _MAX_INLINE_COMMENTS)
+        # Includes duplicate detection: skip if CodeSheriff already
+        # commented on the same file:line in this PR.
         # ---------------------------------------------------------------
         posted_inline = 0
         if inline_comments and head_sha:
+            # Fetch existing PR review comments to detect duplicates
+            existing_comments: set = set()
+            try:
+                async with httpx.AsyncClient() as client:
+                    existing_resp = await client.get(
+                        f"https://api.github.com/repos/{repo_full_name}/pulls/{pr_number}/comments",
+                        headers=gh_headers,
+                        params={"per_page": 100},
+                        timeout=15.0,
+                    )
+                    if existing_resp.status_code == 200:
+                        for ec in existing_resp.json():
+                            body = ec.get("body", "")
+                            if "CodeSheriff" in body:
+                                ec_path = ec.get("path", "")
+                                ec_line = ec.get("line") or ec.get("original_line") or 0
+                                existing_comments.add((ec_path, ec_line))
+                        if existing_comments:
+                            logger.info("Found %d existing CodeSheriff comments for %s#%s",
+                                        len(existing_comments), repo_full_name, pr_number)
+            except Exception as e:
+                logger.warning("Failed to fetch existing PR comments: %s", e)
+
             async with httpx.AsyncClient() as client:
                 for ic in inline_comments[:_MAX_INLINE_COMMENTS]:
+                    ic_file = ic["file"]
+                    ic_line = max(ic.get("line", 1), 1)
+
+                    # Skip duplicates
+                    if (ic_file, ic_line) in existing_comments:
+                        logger.info("Skipping duplicate comment on %s:%d", ic_file, ic_line)
+                        continue
+
                     try:
                         ic_resp = await client.post(
                             f"https://api.github.com/repos/{repo_full_name}/pulls/{pr_number}/comments",
@@ -320,8 +353,8 @@ async def _process_webhook(payload: dict):
                             json={
                                 "body": ic["body"],
                                 "commit_id": head_sha,
-                                "path": ic["file"],
-                                "line": max(ic.get("line", 1), 1),
+                                "path": ic_file,
+                                "line": ic_line,
                                 "side": "RIGHT",
                             },
                             timeout=15.0,
@@ -331,11 +364,11 @@ async def _process_webhook(payload: dict):
                         else:
                             logger.warning(
                                 "Inline comment on %s:%d returned %d: %s",
-                                ic["file"], ic.get("line", 0),
+                                ic_file, ic_line,
                                 ic_resp.status_code, ic_resp.text[:200],
                             )
                     except Exception as e:
-                        logger.warning("Inline comment failed for %s:%d: %s", ic["file"], ic.get("line", 0), e)
+                        logger.warning("Inline comment failed for %s:%d: %s", ic_file, ic_line, e)
             logger.info("Posted %d/%d inline comments for %s#%s",
                         posted_inline, len(inline_comments), repo_full_name, pr_number)
 

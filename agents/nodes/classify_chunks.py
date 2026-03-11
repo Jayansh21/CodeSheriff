@@ -27,6 +27,38 @@ _CONFIDENCE_THRESHOLD = 0.50
 # Any label with probability >= this is included in the multi-label output.
 _MULTI_LABEL_THRESHOLD = 0.40
 
+# ---------------------------------------------------------------------------
+# Issue-type mapping  (model label → user-facing category)
+# The model's LABEL_NAMES are generic; this map gives richer categories
+# that match what developers expect to see in PR reviews.
+# ---------------------------------------------------------------------------
+_LABEL_TYPE_MAP = {
+    # Security
+    "Security Vulnerability": "Security Vulnerability",
+    "SQL_INJECTION": "Security Vulnerability",
+    "COMMAND_INJECTION": "Security Vulnerability",
+    "WEAK_HASH": "Security Vulnerability",
+    # Runtime
+    "Null Reference Risk": "Runtime Bug",
+    "NULL_POINTER": "Runtime Bug",
+    "DIVISION_ERROR": "Runtime Bug",
+    # Type
+    "Type Mismatch": "Type Bug",
+    "TYPE_ERROR": "Type Bug",
+    # Logic
+    "Logic Flaw": "Logic Bug",
+    "LOGIC_ERROR": "Logic Bug",
+    # Quality
+    "CODE_SMELL": "Code Quality",
+    # Clean
+    "Clean": "Clean",
+}
+
+
+def _resolve_issue_type(raw_label: str) -> str:
+    """Map a raw model label to a user-facing issue type."""
+    return _LABEL_TYPE_MAP.get(raw_label, "Code Issue")
+
 
 def _heuristic_classify(code: str) -> dict:
     """
@@ -146,8 +178,9 @@ def classify_chunks_node(state: dict) -> dict:
             labels = [{"type": heuristic["label"], "confidence": heuristic["confidence"], "label_id": heuristic["label_id"]}]
 
         for lbl in labels:
+            issue_type = _resolve_issue_type(lbl["type"])
             classifications.append({
-                "label": lbl["type"],
+                "label": issue_type,
                 "confidence": lbl["confidence"],
                 "label_id": lbl["label_id"],
                 "chunk_index": i,
